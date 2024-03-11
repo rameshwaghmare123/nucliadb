@@ -26,7 +26,7 @@ use nucliadb_core::tracing::*;
 use std::fs::File;
 use std::path::Path;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Metrics {
     pub unknown_items: usize,
     pub partial_data_points: usize,

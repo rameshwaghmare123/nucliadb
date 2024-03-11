@@ -19,6 +19,7 @@
 //
 
 use crate::data_point::{self, DataPointPin, Journal};
+use crate::data_point_provider::garbage_collector;
 use crate::data_point_provider::state::load_state;
 use crate::data_point_provider::state::*;
 use crate::data_point_provider::TimeSensitiveDLog;
@@ -26,6 +27,7 @@ use crate::data_point_provider::{IndexMetadata, OPENING_FLAG, STATE, TEMP_STATE,
 use crate::data_types::dtrie_ram::DTrie;
 use crate::{VectorErr, VectorR};
 use fs2::FileExt;
+use nucliadb_core::tracing;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::mem;
@@ -256,6 +258,10 @@ impl Writer {
         self.has_uncommitted_changes = false;
         self.number_of_embeddings = number_of_embeddings;
 
+        if let Ok(merge_metrics) = self.merge() {
+            println!("MERGE: {merge_metrics:?}");
+        }
+
         Ok(())
     }
 
@@ -407,6 +413,12 @@ impl Writer {
         self.number_of_embeddings = new_number_of_embeddings;
 
         Ok(())
+    }
+
+    pub fn collect_garbage(&mut self) -> VectorR<garbage_collector::Metrics> {
+        let metrics = garbage_collector::collect_garbage(&self.path)?;
+        println!("GC: {metrics:?}");
+        Ok(metrics)
     }
 
     pub fn location(&self) -> &Path {

@@ -1,4 +1,5 @@
 use clap::Parser;
+use nucliadb_core::tracing;
 use nucliadb_vectors::data_point::{self, DataPointPin, Elem, LabelDictionary, Similarity};
 use nucliadb_vectors::data_point_provider::garbage_collector;
 use nucliadb_vectors::data_point_provider::reader::Reader;
@@ -10,6 +11,8 @@ use rand::Rng;
 use serde_json::json;
 use std::io::Write;
 use std::path::Path;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use std::time::SystemTime;
 use vectors_benchmark::json_writer::write_json;
 use vectors_benchmark::random_vectors::RandomVectors;
@@ -248,45 +251,128 @@ fn test_datapoint(
     stats
 }
 
+pub fn search(reader: Arc<RwLock<Reader>>, request: Request) {
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        let read_guard = reader.read().unwrap();
+        let (_, elapsed_time) = measure_time!(microseconds {
+            read_guard.search(&request).unwrap()
+        });
+        println!("SEARCH: {elapsed_time} µs");
+    }
+}
+
+pub fn update(reader: Arc<RwLock<Reader>>) {
+    let update_cycle = 1000 as f64;
+    let mut current_cycle = 0 as f64;
+    let mut current_cycle_time = 0.0 as f64;
+    loop {
+        std::thread::sleep(Duration::from_millis(10));
+        let mut write_guard = reader.write().unwrap();
+        let (_, elapsed_time) = measure_time!(microseconds {
+            write_guard.update().unwrap();
+        });
+        current_cycle_time += elapsed_time;
+        current_cycle += 1.0;
+        if current_cycle == update_cycle {
+            let cycle_average = (current_cycle_time / update_cycle) as u128;
+            println!("UPDATE: {cycle_average} µs");
+            current_cycle_time = 0.0;
+            current_cycle = 0.0;
+        }
+    }
+}
+
+pub fn ingest(writer: Arc<RwLock<Writer>>, index_size: usize, batch_size: usize, vecs: &[RandomVectors]) {
+    let mut writing_time: f64 = 0.0;
+    for (i, vec) in vecs.iter().enumerate().take(index_size / batch_size) {
+        let mut write_guard = writer.write().unwrap();
+        let elems = vec.take(batch_size).enumerate().map(|(i, q)| (i.to_string(), q)).collect();
+        let (_, elapsed_time) = measure_time!(milliseconds {
+            add_batch(i, &mut write_guard, elems, index_size);
+        });
+
+        writing_time += elapsed_time;
+        println!("WRITE: {} vectors included", batch_size * i);
+        let _ = std::io::stdout().flush();
+    }
+}
+
+pub fn garbage_collect(writer: Arc<RwLock<Writer>>) {
+    loop {
+        std::thread::sleep(Duration::from_secs(15));
+        let mut write_guard = writer.write().unwrap();
+        let (_, elapsed_time) = measure_time!(microseconds {
+            write_guard.collect_garbage().unwrap();
+        });
+        println!("GC: {elapsed_time} µs");
+    }
+}
+
 fn main() {
     let args = Args::new();
-    let mut json_results = vec![];
 
-    let unfiltered_request = Request {
+    let at = tempfile::TempDir::new().unwrap();
+    let db_location = at.path().join("vectors");
+    let vecs = generate_vecs(args.index_size / args.batch_size);
+    let writer = Writer::new(&db_location, IndexMetadata::default()).unwrap();
+    let reader = Reader::open(&db_location).unwrap();
+    let writer = Arc::new(RwLock::new(writer));
+    let reader = Arc::new(RwLock::new(reader));
+
+    let request = Request {
         filter: Formula::new(),
         vector: RandomVectors::new(VECTOR_DIM).next().unwrap(),
     };
+    let search_reader = Arc::clone(&reader);
+    let search_handle = std::thread::spawn(move || search(search_reader, request));
 
-    let mut filtered_requests: Vec<Request> = vec![];
-    for _ in 0..args.cycles {
-        filtered_requests.push(create_filtered_request());
-    }
-    let vecs = generate_vecs(args.index_size / args.batch_size);
+    let update_reader = Arc::clone(&reader);
+    let update_handle = std::thread::spawn(move || update(update_reader));
 
-    let stats =
-        test_datapoint(args.index_size, args.batch_size, args.cycles, &unfiltered_request, &filtered_requests, &vecs);
+    let ingest_writer = Arc::clone(&writer);
+    let index_size = args.index_size;
+    let batch_size = args.batch_size;
+    let ingest_handle = std::thread::spawn(move || ingest(ingest_writer, index_size, batch_size, &vecs));
 
-    json_results.extend(vec![
-        json!({
-            "name": format!("Writing Time"),
-            "unit": "ms",
-            "value": stats.writing_time,
-        }),
-        json!({
-        "name": format!("Reading Time"),
-        "unit": "µs",
-        "value": stats.read_time,
+    let gc_writer = Arc::clone(&writer);
+    let gc_handle = std::thread::spawn(move || garbage_collect(gc_writer));
 
-        }),
-        json!({
-        "name": format!("Reading Time with Labels"),
-        "unit": "µs",
-        "value": stats.tagged_time,
+    search_handle.join().unwrap();
 
-        }),
-    ]);
+    // let unfiltered_request = Request {
+    //     filter: Formula::new(),
+    //     vector: RandomVectors::new(VECTOR_DIM).next().unwrap(),
+    // };
 
-    let pjson = serde_json::to_string_pretty(&json_results).unwrap();
-    println!("{}", pjson);
-    write_json(args.json_output, json_results, args.merge).unwrap();
+    // let mut filtered_requests: Vec<Request> = vec![];
+    // for _ in 0..args.cycles {
+    //     filtered_requests.push(create_filtered_request());
+    // }
+    // let stats =
+    //     test_datapoint(args.index_size, args.batch_size, args.cycles, &unfiltered_request, &filtered_requests, &vecs);
+
+    // json_results.extend(vec![
+    //     json!({
+    //         "name": format!("Writing Time"),
+    //         "unit": "ms",
+    //         "value": stats.writing_time,
+    //     }),
+    //     json!({
+    //     "name": format!("Reading Time"),
+    //     "unit": "µs",
+    //     "value": stats.read_time,
+
+    //     }),
+    //     json!({
+    //     "name": format!("Reading Time with Labels"),
+    //     "unit": "µs",
+    //     "value": stats.tagged_time,
+
+    //     }),
+    // ]);
+
+    // let pjson = serde_json::to_string_pretty(&json_results).unwrap();
+    // println!("{}", pjson);
+    // write_json(args.json_output, json_results, args.merge).unwrap();
 }
