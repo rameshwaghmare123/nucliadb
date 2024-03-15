@@ -18,7 +18,7 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 import enum
-
+from typing import Optional
 from pydantic import BaseSettings, Field
 
 
@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     cluster_discovery_kubernetes_namespace: str = "nucliadb"
     cluster_discovery_kubernetes_selector: str = "appType=node"
     cluster_discovery_manual_addresses: list[str] = []
+
+    redis_url: Optional[str] = None
 
 
 settings = Settings()

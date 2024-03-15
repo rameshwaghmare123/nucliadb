@@ -17,20 +17,32 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
+import asyncio
+import logging
+from typing import Optional
+import logging
 
 from nucliadb.common.context import ApplicationContext
+from nucliadb.migrator.utils import get_migrations
+from nucliadb_telemetry import errors, metrics
 
-from .datamanager import MigrationsDataManager
-from .settings import Settings
+logger = logging.getLogger(__name__)
 
 
-class ExecutionContext(ApplicationContext):
-    data_manager: MigrationsDataManager
+async def run(context: ApplicationContext) -> None:
+    async with context.maybe_distributed_lock("rebalance"):
+        # go through each kb and see if shards need to be reduced in size
+        ...
 
-    def __init__(self, settings: Settings) -> None:
-        super().__init__(service_name="migrator")
-        self.settings = settings
 
-    async def initialize(self) -> None:
-        await super().initialize()
-        self.data_manager = MigrationsDataManager(self.kv_driver)
+async def run_forever(context: ApplicationContext) -> None:
+    """
+    Most of the time this will be a noop but allows
+    retrying failures until everything is done.
+    """
+    while True:
+        try:
+            await run(context)
+        except Exception:
+            logger.exception("Failed to run rebalancing. Will retry again in 5 minutes")
+        await asyncio.sleep(5 * 60)

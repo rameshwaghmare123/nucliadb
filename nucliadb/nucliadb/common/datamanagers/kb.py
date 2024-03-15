@@ -80,3 +80,11 @@ class KnowledgeBoxDataManager:
             return knowledgebox_pb2.SemanticModelMetadata(
                 similarity_function=shards_obj.similarity
             )
+
+    async def schedule_all_kbs(self, target_version: int) -> None:
+        async with self.driver.transaction() as txn:
+            async for kbid, _ in KnowledgeBoxORM.get_kbs(txn, slug=""):
+                await txn.set(
+                    MIGRATIONS_KEY.format(kbid=kbid), str(target_version).encode()
+                )
+            await txn.commit()

@@ -18,7 +18,8 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 import asyncio
-
+import contextlib
+from typing import AsyncIterator
 from nucliadb.common.cluster.manager import KBShardManager
 from nucliadb.common.cluster.settings import in_standalone_mode
 from nucliadb.common.cluster.utils import setup_cluster, teardown_cluster
@@ -28,7 +29,9 @@ from nucliadb_utils.indexing import IndexingUtility
 from nucliadb_utils.nats import NatsConnectionManager
 from nucliadb_utils.partition import PartitionUtility
 from nucliadb_utils.settings import indexing_settings
+from nucliadb.common.cluster.settings import settings as cluster_settings
 from nucliadb_utils.storages.storage import Storage
+from nucliadb_utils.cache import locking
 from nucliadb_utils.utilities import (
     Utility,
     clean_utility,
@@ -51,6 +54,7 @@ class ApplicationContext:
     partitioning: PartitionUtility
     indexing: IndexingUtility
     nats_manager: NatsConnectionManager
+    dist_lock_manager: locking.RedisDistributedLockManager
 
     def __init__(self, service_name: str = "service") -> None:
         self.service_name = service_name
@@ -79,6 +83,10 @@ class ApplicationContext:
             )
             self.indexing = await start_indexing_utility()
         self.transaction = await start_transaction_utility(self.service_name)
+        if cluster_settings.redis_url is not None:
+            self.dist_lock_manager = locking.RedisDistributedLockManager(
+                cluster_settings.redis_url
+            )
 
     async def finalize(self) -> None:
         if not self._initialized:
@@ -93,4 +101,16 @@ class ApplicationContext:
         await teardown_driver()
         await self.blob_storage.finalize()
         clean_utility(Utility.STORAGE)
+        await self.dist_lock_manager.close()
         self._initialized = False
+
+    @contextlib.asynccontextmanager
+    async def maybe_distributed_lock(self, name: str) -> AsyncIterator[None]:
+        """
+        For on prem installs, redis may not be available to use for distributed locks.
+        """
+        if cluster_settings.redis_url is None:
+            yield
+        else:
+            async with self.dist_lock_manager.lock(name):
+                yield
