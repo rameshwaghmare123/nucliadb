@@ -292,9 +292,11 @@ class Processor:
                     seqid=seqid,
                     multi=multi,
                     message=message,
-                    write_type=writer_pb2.Notification.WriteType.CREATED
-                    if created
-                    else writer_pb2.Notification.WriteType.MODIFIED,
+                    write_type=(
+                        writer_pb2.Notification.WriteType.CREATED
+                        if created
+                        else writer_pb2.Notification.WriteType.MODIFIED
+                    ),
                 )
             elif resource and resource.modified is False:
                 await txn.abort()
@@ -380,21 +382,6 @@ class Processor:
             # It's a new resource, get current active shard to place
             # new resource on
             shard = await self.shard_manager.get_current_active_shard(txn, kbid)
-            if shard is None:
-                # no shard available, create a new one
-                model = await self.kb_data_manager.get_model_metadata(kbid)
-                config = await kb.get_config()
-                if config is not None:
-                    release_channel = config.release_channel
-                else:
-                    release_channel = utils_pb2.ReleaseChannel.STABLE
-
-                shard = await self.shard_manager.create_shard_by_kbid(
-                    txn,
-                    kbid,
-                    semantic_model=model,
-                    release_channel=release_channel,
-                )
             await kb.set_resource_shard_id(uuid, shard.shard)
 
         if shard is not None:

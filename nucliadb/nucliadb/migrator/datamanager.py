@@ -26,6 +26,7 @@ from nucliadb.ingest.orm.knowledgebox import (
 from nucliadb_protos import migrations_pb2
 
 from .models import GlobalInfo, KnowledgeBoxInfo
+from nucliadb.common.datamanagers.kb import KnowledgeBoxDataManager
 
 
 class _Unset:
@@ -42,10 +43,11 @@ MIGRATION_INFO_KEY = "migration/info"
 class MigrationsDataManager:
     def __init__(self, driver: Driver):
         self.driver = driver
+        self.kbdm = KnowledgeBoxDataManager(driver)
 
     async def schedule_all_kbs(self, target_version: int) -> None:
         async with self.driver.transaction() as txn:
-            async for kbid, _ in KnowledgeBoxORM.get_kbs(txn, slug=""):
+            for kbid in self.kbdm.get_kb_ids():
                 await txn.set(
                     MIGRATIONS_KEY.format(kbid=kbid), str(target_version).encode()
                 )

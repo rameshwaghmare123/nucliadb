@@ -28,7 +28,7 @@ from nucliadb.common.cluster.manager import INDEX_NODES
 from nucliadb.common.maindb.utils import get_driver
 from nucliadb.search.api.v1.router import KB_PREFIX
 from nucliadb_models.resource import NucliaDBRoles
-from nucliadb_utils.keys import KB_SHARDS
+from nucliadb.common.datamanagers.kb import KB_SHARDS
 
 
 @pytest.mark.flaky(reruns=5)

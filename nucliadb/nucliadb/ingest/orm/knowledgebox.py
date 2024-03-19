@@ -64,8 +64,6 @@ KB_KEYS = "/kbs/{kbid}/"
 
 KB_VECTORSET = "/kbs/{kbid}/vectorsets"
 KB_RESOURCE_SHARD = "/kbs/{kbid}/r/{uuid}/shard"
-KB_SLUGS_BASE = "/kbslugs/"
-KB_SLUGS = KB_SLUGS_BASE + "{slug}"
 
 KB_TO_DELETE_BASE = "/kbtodelete/"
 KB_TO_DELETE_STORAGE_BASE = "/storagetodelete/"

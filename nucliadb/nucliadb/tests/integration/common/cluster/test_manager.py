@@ -31,7 +31,7 @@ from nucliadb.common.cluster.exceptions import (
     NoHealthyNodeAvailable,
 )
 from nucliadb.common.maindb.driver import Driver
-from nucliadb_utils.keys import KB_SHARDS
+from nucliadb.common.datamanagers.kb import KB_SHARDS
 
 
 @pytest.fixture(scope="function")

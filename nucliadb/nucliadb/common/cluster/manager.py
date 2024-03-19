@@ -49,7 +49,7 @@ from nucliadb_protos import (
     writer_pb2,
 )
 from nucliadb_telemetry import errors
-from nucliadb_utils.keys import KB_SHARDS
+from nucliadb.common.datamanagers.kb import KB_SHARDS
 from nucliadb_utils.utilities import get_indexing, get_storage
 
 from .index_node import IndexNode
@@ -180,7 +180,7 @@ class KBShardManager:
 
     async def get_current_active_shard(
         self, txn: Transaction, kbid: str
-    ) -> Optional[writer_pb2.ShardObject]:
+    ) -> writer_pb2.ShardObject:
         key = KB_SHARDS.format(kbid=kbid)
         kb_shards_bytes: Optional[bytes] = await txn.get(key)
         if kb_shards_bytes:
@@ -189,7 +189,21 @@ class KBShardManager:
             shard: writer_pb2.ShardObject = kb_shards.shards[kb_shards.actual]
             return shard
         else:
-            return None
+            # no shard available, create a new one
+            kbdm = KnowledgeBoxDataManager(get_driver())
+            model = await kbdm.get_model_metadata(kbid)
+            config = await kbdm.get_config(kbid)
+            if config is not None:
+                release_channel = config.release_channel
+            else:
+                release_channel = utils_pb2.ReleaseChannel.STABLE
+
+            return await self.create_shard_by_kbid(
+                txn,
+                kbid,
+                semantic_model=model,
+                release_channel=release_channel,
+            )
 
     async def create_shard_by_kbid(
         self,

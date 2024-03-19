@@ -24,7 +24,14 @@ from nucliadb.common.cluster.exceptions import ShardsNotFound
 from nucliadb.common.datamanagers.exceptions import KnowledgeBoxNotFound
 from nucliadb.common.maindb.driver import Driver, Transaction
 from nucliadb_protos import knowledgebox_pb2, writer_pb2
-from nucliadb_utils.keys import KB_SHARDS, KB_UUID
+import logging
+
+logger = logging.getLogger(__name__)
+
+KB_SHARDS = "/kbs/{kbid}/shards"
+KB_UUID = "/kbs/{kbid}/config"
+KB_SLUGS_BASE = "/kbslugs/"
+KB_SLUGS = KB_SLUGS_BASE + "{slug}"
 
 
 class KnowledgeBoxDataManager:
@@ -81,10 +88,20 @@ class KnowledgeBoxDataManager:
                 similarity_function=shards_obj.similarity
             )
 
-    async def schedule_all_kbs(self, target_version: int) -> None:
+    async def get_kb_uuid(self, slug: str) -> Optional[str]:
         async with self.driver.transaction() as txn:
-            async for kbid, _ in KnowledgeBoxORM.get_kbs(txn, slug=""):
-                await txn.set(
-                    MIGRATIONS_KEY.format(kbid=kbid), str(target_version).encode()
-                )
-            await txn.commit()
+            uuid = await txn.get(KB_SLUGS.format(slug=slug))
+            if uuid is not None:
+                return uuid.decode()
+            else:
+                return None
+
+    async def get_kb_ids(self) -> list[str]:
+        async with self.driver.transaction() as txn:
+            async for key in txn.keys(KB_SLUGS.format(slug=slug)):
+                slug = key.replace(KB_SLUGS_BASE, "")
+                uuid = await self.get_kb_uuid(slug)
+                if uuid is None:
+                    logger.error(f"KB with slug ({slug}) but without uuid?")
+                    continue
+                yield (uuid, slug)

@@ -23,7 +23,7 @@ from typing import Optional
 
 from nucliadb.common.maindb.driver import Driver, Transaction
 from nucliadb_protos import writer_pb2
-from nucliadb_utils.keys import KB_SHARDS  # this should be defined here
+from nucliadb.common.datamanagers.kb import KB_SHARDS
 
 from .utils import get_kv_pb
 

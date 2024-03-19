@@ -124,8 +124,7 @@ class WriterServicer(writer_pb2_grpc.WriterServicer):
         self.shards_manager = get_shard_manager()
         self.kb_data_manager = KnowledgeBoxDataManager(self.driver)
 
-    async def finalize(self):
-        ...
+    async def finalize(self): ...
 
     async def SetVectors(  # type: ignore
         self, request: SetVectorsRequest, context=None
@@ -665,7 +664,7 @@ class WriterServicer(writer_pb2_grpc.WriterServicer):
         logger.info("Status Call")
         response = WriterStatusResponse()
         async with self.driver.transaction() as txn:
-            async for (_, slug) in KnowledgeBoxObj.get_kbs(txn, slug="", count=-1):
+            async for _, slug in KnowledgeBoxObj.get_kbs(txn, slug="", count=-1):
                 response.knowledgeboxes.append(slug)
 
             for partition in settings.partitions:
@@ -773,15 +772,6 @@ class WriterServicer(writer_pb2_grpc.WriterServicer):
                     shard = await self.shards_manager.get_current_active_shard(
                         txn, request.kbid
                     )
-                    if shard is None:
-                        # no shard currently exists, create one
-                        model = await self.kb_data_manager.get_model_metadata(
-                            request.kbid
-                        )
-                        shard = await self.shards_manager.create_shard_by_kbid(
-                            txn, request.kbid, semantic_model=model
-                        )
-
                     await kbobj.set_resource_shard_id(request.rid, shard.shard)
 
                 if shard is not None:

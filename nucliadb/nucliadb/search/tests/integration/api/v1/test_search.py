@@ -35,7 +35,7 @@ from nucliadb.common.maindb.utils import get_driver
 from nucliadb.ingest.tests.vectors import Q
 from nucliadb.search.api.v1.router import KB_PREFIX
 from nucliadb_models.resource import NucliaDBRoles
-from nucliadb_utils.keys import KB_SHARDS
+from nucliadb.common.datamanagers.kb import KB_SHARDS
 
 RUNNING_IN_GH_ACTIONS = os.environ.get("CI", "").lower() == "true"
 
