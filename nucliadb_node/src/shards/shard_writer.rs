@@ -255,9 +255,7 @@ impl ShardWriter {
         archive.append_dir_all(".", path).await?;
         archive.finish().await?;
         let mut x = archive.into_inner().await?;
-        println!("Uploaded with {x:?}");
         x.shutdown().await?;
-        println!("Uploaded with {x:?}");
 
         Ok(())
     }
@@ -295,10 +293,12 @@ impl ShardWriter {
                 // let opstamp =
                 //     self.metadb.register_segment(result.file_name().unwrap().to_string_lossy().into_owned()).await?;
                 // self.metadb.record_deletions(opstamp, &resource.sentences_to_delete).await?;
+                let seq = resource.resource.as_ref().unwrap().shard_id.parse().unwrap();
                 self.metadb
                     .record_segment_deletions(
                         result.file_name().unwrap().to_string_lossy().into_owned(),
                         &resource.sentences_to_delete,
+                        seq,
                     )
                     .await?;
 

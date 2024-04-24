@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -9,13 +11,13 @@ use nucliadb_core::protos::*;
 use nucliadb_node::shards::metadata::ShardMetadata;
 use nucliadb_node::shards::writer::ShardWriter;
 
-use rand::Rng;
+use rand::{random, Rng};
 
 fn random_key() -> String {
     format!("{:032x?}", rand::random::<u128>())
 }
 
-fn resource(id: usize, counter: u32) -> Resource {
+fn resource(id: usize, seq: u32) -> Resource {
     let mut paragraphs = HashMap::new();
 
     let mut vector = [0.0; 50].to_vec();
@@ -23,12 +25,12 @@ fn resource(id: usize, counter: u32) -> Resource {
 
     let key = format!("r{id}");
     paragraphs.insert(
-        format!("{key}p{counter}"),
+        format!("{key}p{seq}"),
         IndexParagraph {
             start: 0,
             end: 100,
             sentences: [(
-                format!("{key}ps{counter}"),
+                format!("{key}ps{seq}"),
                 VectorSentence {
                     vector: vector.clone(),
                     ..Default::default()
@@ -46,7 +48,7 @@ fn resource(id: usize, counter: u32) -> Resource {
             created: Some(SystemTime::now().into()),
         }),
         resource: Some(ResourceId {
-            shard_id: "patata".into(),
+            shard_id: seq.to_string(),
             uuid: key.clone(),
         }),
         paragraphs: [(
@@ -86,13 +88,26 @@ fn main() -> anyhow::Result<()> {
         Err(_) => ShardWriter::new(Arc::new(metadata2)).unwrap(),
     };
 
-    let mut i = 0;
+    let mut seq = 1;
     loop {
         let t = Instant::now();
-        sw.set_resource(resource(rand::thread_rng().gen_range(0..10), i))?;
-        println!("Indexing took {:?}", t.elapsed());
-        thread::sleep(Duration::from_millis(20));
-        i += 1;
+        let mut batch = vec![];
+        for _ in 0..100 {
+            batch.push((resource(rand::thread_rng().gen_range(0..10), seq), seq));
+            println!("Resource {} seq={seq}", batch.last().unwrap().0.resource.as_ref().unwrap().uuid);
+            seq += 1;
+        }
+        batch.sort_by_cached_key(|_| random::<u32>());
+        while let Some((resource, _)) = batch.pop() {
+            let oldest_pending = batch.iter().chain(vec![(resource.clone(), seq)].iter()).map(|r| r.1).min().unwrap();
+            std::fs::write("/tmp/oldest_ack", (oldest_pending - 1).to_ne_bytes())?;
+
+            // Passing seq number as resource.shard_id 🙈
+            sw.set_resource(resource)?;
+            thread::sleep(Duration::from_millis(10));
+        }
+        println!("Indexing batch took {:?}", t.elapsed());
+        thread::sleep(Duration::from_millis(200));
     }
 
     Ok(())

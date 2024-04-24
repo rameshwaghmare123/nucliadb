@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{fs, thread};
 
+use itertools::Itertools;
 use nucliadb_node::metadb::MetaDB;
 use nucliadb_vectors::data_point_provider::reader::Reader;
 use nucliadb_vectors::data_point_provider::SearchRequest;
@@ -48,14 +49,16 @@ fn update_thread(working_path: PathBuf, reader: Arc<Mutex<Reader>>) {
     let meta = rt.block_on(MetaDB::new()).unwrap();
     let mut last_segments = HashSet::new();
     loop {
-        thread::sleep(Duration::from_millis(100));
-        let (segments, deletions) = rt.block_on(meta.list_segments_and_deletions()).unwrap();
-        println!(
-            "Max seg = {}, Max deletion = {}",
-            segments.iter().map(|x| x.1).max().unwrap(),
-            deletions.iter().map(|x| x.1).max().unwrap()
-        );
-        assert_eq!(segments.iter().map(|x| x.1).max().unwrap(), deletions.iter().map(|x| x.1).max().unwrap());
+        thread::sleep(Duration::from_millis(50));
+        let (segments, deletions) = rt.block_on(meta.list_segments_and_deletions(1000000000)).unwrap();
+
+        let ms = segments.iter().map(|x| x.1).max().unwrap();
+        let ds = deletions.iter().map(|x| x.1).max();
+
+        if let Some(ds) = ds {
+            assert_eq!(ms, ds);
+        }
+
         let segment_set: HashSet<_> = segments.iter().map(|x| x.0.clone()).collect();
         if segment_set == last_segments {
             continue;
@@ -118,6 +121,11 @@ fn main() -> anyhow::Result<()> {
                 println!("Available keys = {:?}", keys);
                 continue;
             } else if keys.len() > 1 {
+                println!("SEGMENTS {:#?}", lr.segment_versions);
+                println!(
+                    "DELETIONS {:#?}",
+                    lr.deletions.iter().map(|(x, y)| (String::from_utf8_lossy(x), y)).collect_vec()
+                );
                 panic!("Multiple results for {resource}: {keys:?}");
             }
             let v = keys[0].split("ps").nth(1).unwrap().parse::<u32>().unwrap();
@@ -125,6 +133,7 @@ fn main() -> anyhow::Result<()> {
             assert!(old_v <= v, "not {old_v} <= {v}");
             latest.insert(resource, v);
         }
+        println!("Search PASS");
         thread::sleep(Duration::from_millis(10));
     }
 

@@ -23,11 +23,24 @@ async fn main() -> anyhow::Result<()> {
 
     loop {
         thread::sleep(Duration::from_millis(rand::thread_rng().gen_range(500..1500)));
+
         let working_path = tempdir()?;
-        let (segments, deletions) = meta.list_segments_and_deletions().await?;
+
+        // Get oldest processed seq
+        let oldest_ack = u32::from_ne_bytes(std::fs::read("/tmp/oldest_ack")?.as_slice().try_into()?);
+
+        // We can only merge segments older than the oldest ack
+        // This is to ensure there are no pending writes that would go in the middle of the timespan
+        // covered by the merged segment, since then we cannot know if a deletion applies or not (we
+        // lose the opstamp of each resource when merging)
+        let (segments, deletions) = meta.list_segments_and_deletions(oldest_ack as i64).await?;
 
         // Merge time is the latest opstamp we read deletions or segments for
-        let merge_time = segments.iter().chain(deletions.iter()).map(|(_, t)| t).max().unwrap();
+        let merge_time = segments
+            .iter() /*.chain(deletions.iter())*/
+            .map(|(_, t)| t)
+            .max()
+            .unwrap();
 
         if segments.len() <= 1 {
             println!("Not enough to merge");
@@ -79,6 +92,8 @@ async fn main() -> anyhow::Result<()> {
         println!("Uploaded");
 
         meta.replace_segments(segments.iter().map(|x| x.0.clone()).collect(), out.to_string(), *merge_time).await?;
+
+        meta.trim_deletions(oldest_ack).await?;
 
         for s in segments {
             storage.delete(&path::Path::from(s.0)).await?;

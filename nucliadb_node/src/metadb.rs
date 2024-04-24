@@ -63,8 +63,13 @@ impl MetaDB {
         Ok(())
     }
 
-    pub async fn record_segment_deletions(&self, segment_id: String, remove: &Vec<String>) -> NodeResult<i64> {
-        let opstamp = self.next_opstamp().await?;
+    pub async fn record_segment_deletions(
+        &self,
+        segment_id: String,
+        remove: &Vec<String>,
+        seq: i64,
+    ) -> NodeResult<i64> {
+        let opstamp = seq;
         let mut tx = self.conn.begin().await?;
         sqlx::query!("INSERT INTO segments (segment_id, opstamp) VALUES (?, ?)", segment_id, opstamp)
             .execute(&mut *tx)
@@ -77,8 +82,8 @@ impl MetaDB {
         Ok(opstamp)
     }
 
-    pub async fn trim_deletions(&self) -> NodeResult<()> {
-        sqlx::query!("DELETE FROM deletions WHERE opstamp <= (SELECT min(opstamp) FROM segments)")
+    pub async fn trim_deletions(&self, oldest_ack: u32) -> NodeResult<()> {
+        sqlx::query!("DELETE FROM deletions WHERE opstamp <= MIN((SELECT min(opstamp) FROM segments), ?)", oldest_ack)
             .execute(&self.conn)
             .await?;
         Ok(())
@@ -99,9 +104,12 @@ impl MetaDB {
         Ok(dels)
     }
 
-    pub async fn list_segments_and_deletions(&self) -> NodeResult<(Vec<(String, i64)>, Vec<(String, i64)>)> {
+    pub async fn list_segments_and_deletions(
+        &self,
+        until: i64,
+    ) -> NodeResult<(Vec<(String, i64)>, Vec<(String, i64)>)> {
         let mut tx = self.conn.begin().await?;
-        let segs = sqlx::query!("SELECT segment_id, opstamp FROM segments")
+        let segs = sqlx::query!("SELECT segment_id, opstamp FROM segments WHERE opstamp <= ?", until)
             .fetch_all(&mut *tx)
             .await?
             .iter()

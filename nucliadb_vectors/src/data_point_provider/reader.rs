@@ -130,8 +130,8 @@ pub struct Reader {
     number_of_embeddings: usize,
     version: SystemTime,
     dimension: Option<u64>,
-    segment_versions: HashMap<DpId, i64>,
-    deletions: Vec<(Vec<u8>, i64)>,
+    pub segment_versions: HashMap<DpId, i64>,
+    pub deletions: Vec<(Vec<u8>, i64)>,
 }
 
 impl Reader {
