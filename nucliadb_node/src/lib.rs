@@ -35,6 +35,7 @@ pub mod grpc;
 pub mod http_server;
 pub mod lifecycle;
 pub mod merge;
+pub mod metadb;
 pub mod node_metadata;
 pub mod replication;
 pub mod settings;

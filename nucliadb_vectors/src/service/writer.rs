@@ -36,6 +36,7 @@ use nucliadb_core::{IndexFiles, RawReplicaState};
 use nucliadb_procs::measure;
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::path::PathBuf;
 use std::time::Instant;
 use std::time::SystemTime;
 
@@ -102,7 +103,7 @@ impl VectorWriter for VectorWriterService {
 
     #[measure(actor = "vectors", metric = "set_resource")]
     #[tracing::instrument(skip_all)]
-    fn set_resource(&mut self, resource: &Resource) -> NodeResult<()> {
+    fn set_resource(&mut self, resource: &Resource) -> NodeResult<Option<PathBuf>> {
         let time = Instant::now();
 
         let id = resource.resource.as_ref().map(|i| &i.shard_id);
@@ -144,35 +145,37 @@ impl VectorWriter for VectorWriterService {
         debug!("{id:?} - Main index set resource: starts {v} ms");
 
         if lengths.len() > 1 {
-            return Ok(tracing::error!("{}", self.dimensions_report(lengths)));
+            return Ok(None);
         }
 
-        if !elems.is_empty() {
+        let dp = if !elems.is_empty() {
             let location = self.index.location();
             let time = Some(temporal_mark);
             let similarity = self.index.metadata().similarity;
             let data_point_pin = DataPointPin::create_pin(location)?;
             data_point::create(&data_point_pin, elems, time, similarity)?;
-            self.index.add_data_point(data_point_pin)?;
-        }
+            Some(data_point_pin.path().to_owned())
+        } else {
+            None
+        };
 
-        for to_delete in &resource.sentences_to_delete {
-            let key_as_bytes = to_delete.as_bytes();
-            self.index.record_delete(key_as_bytes, temporal_mark);
-        }
+        // for to_delete in &resource.sentences_to_delete {
+        //     let key_as_bytes = to_delete.as_bytes();
+        //     self.index.record_delete(key_as_bytes, temporal_mark);
+        // }
 
-        self.index.commit()?;
+        // self.index.commit()?;
 
-        let v = time.elapsed().as_millis();
-        debug!("{id:?} - Main index set resource: ends {v} ms");
+        // let v = time.elapsed().as_millis();
+        // debug!("{id:?} - Main index set resource: ends {v} ms");
 
-        let metrics = metrics::get_metrics();
-        let took = time.elapsed().as_secs_f64();
-        let metric = request_time::RequestTimeKey::vectors("set_resource".to_string());
-        metrics.record_request_time(metric, took);
-        debug!("{id:?} - Ending at {took} ms");
+        // let metrics = metrics::get_metrics();
+        // let took = time.elapsed().as_secs_f64();
+        // let metric = request_time::RequestTimeKey::vectors("set_resource".to_string());
+        // metrics.record_request_time(metric, took);
+        // debug!("{id:?} - Ending at {took} ms");
 
-        Ok(())
+        Ok(dp)
     }
 
     #[measure(actor = "vectors", metric = "garbage_collection")]

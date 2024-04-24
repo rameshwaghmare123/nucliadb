@@ -17,7 +17,7 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use nucliadb_core::paragraphs::*;
@@ -31,8 +31,12 @@ use nucliadb_core::vectors::*;
 use nucliadb_core::{thread, IndexFiles};
 use nucliadb_procs::measure;
 use nucliadb_vectors::VectorErr;
+use object_store::local::LocalFileSystem;
+use object_store::ObjectStore;
+use tokio::io::AsyncWriteExt;
 
 use crate::disk_structure::*;
+use crate::metadb::MetaDB;
 use crate::shards::metadata::ShardMetadata;
 use crate::shards::versions::Versions;
 use crate::telemetry::run_with_telemetry;
@@ -77,6 +81,8 @@ pub struct ShardWriter {
     relation_service_version: i32,
     pub gc_lock: tokio::sync::Mutex<()>, // lock to be able to do GC or not
     write_lock: Mutex<()>,               // be able to lock writes on the shard
+    object_store: Arc<dyn ObjectStore>,
+    metadb: MetaDB,
 }
 
 impl ShardWriter {
@@ -119,6 +125,9 @@ impl ShardWriter {
         let paragraphs = paragraph_result.transpose()?;
         let vectors = vector_result.transpose()?;
         let relations = relation_result.transpose()?;
+        let _ = std::fs::create_dir(metadata.shard_path().join("objects"));
+        let object_store = Arc::new(LocalFileSystem::new_with_prefix(metadata.shard_path().join("objects"))?);
+        let metadb = tokio::runtime::Builder::new_current_thread().enable_time().build()?.block_on(MetaDB::new())?;
 
         Ok(ShardWriter {
             id: metadata.id(),
@@ -134,6 +143,8 @@ impl ShardWriter {
             relation_service_version: versions.version_relations() as i32,
             gc_lock: tokio::sync::Mutex::new(()),
             write_lock: Mutex::new(()),
+            object_store,
+            metadb,
         })
     }
 
@@ -234,6 +245,23 @@ impl ShardWriter {
         ShardWriter::initialize(metadata, tsc, psc, vsc, rsc)
     }
 
+    async fn upload(&self, path: &Path) -> NodeResult<()> {
+        // Archive & upload
+        let uploader = object_store::buffered::BufWriter::new(
+            self.object_store.clone(),
+            path.file_name().unwrap().to_str().unwrap().into(),
+        );
+        let mut archive = tokio_tar::Builder::new(uploader);
+        archive.append_dir_all(".", path).await?;
+        archive.finish().await?;
+        let mut x = archive.into_inner().await?;
+        println!("Uploaded with {x:?}");
+        x.shutdown().await?;
+        println!("Uploaded with {x:?}");
+
+        Ok(())
+    }
+
     #[measure(actor = "shard", metric = "set_resource")]
     #[tracing::instrument(skip_all)]
     pub fn set_resource(&self, mut resource: Resource) -> NodeResult<()> {
@@ -260,9 +288,12 @@ impl ShardWriter {
         let vector_task = || {
             debug!("Vector service starts set_resource");
             let mut writer = write_rw_lock(&self.vector_writer);
-            let result = writer.set_resource(&resource);
+            let result = writer.set_resource(&resource)?.unwrap();
             debug!("Vector service ends set_resource");
-            result
+            tokio::runtime::Builder::new_current_thread().enable_time().build()?.block_on(async {
+                self.upload(&result).await?;
+                self.metadb.register_segment(result.file_name().unwrap().to_string_lossy().into_owned()).await
+            })
         };
 
         let relation_task = || {
