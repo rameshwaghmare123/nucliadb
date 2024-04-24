@@ -18,7 +18,7 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 //
 
-use crate::data_point::{self, DataPointPin, OpenDataPoint, SearchParams};
+use crate::data_point::{self, DataPointPin, NoDLog, OpenDataPoint, SearchParams};
 pub use crate::data_point::{DpId, Neighbour};
 use crate::data_point_provider::state::read_state;
 use crate::data_point_provider::{IndexMetadata, SearchRequest, OPENING_FLAG, STATE};
@@ -30,10 +30,12 @@ use fs2::FileExt;
 use fxhash::{FxHashMap, FxHashSet};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use std::fs::{read_dir, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+use super::state::State;
 
 #[derive(Clone, Copy)]
 struct TimeSensitiveDLog<'a> {
@@ -43,6 +45,21 @@ struct TimeSensitiveDLog<'a> {
 impl<'a> DeleteLog for TimeSensitiveDLog<'a> {
     fn is_deleted(&self, key: &[u8]) -> bool {
         self.dlog.get(key).map(|t| t > self.time).unwrap_or_default()
+    }
+}
+
+#[derive(Clone)]
+pub struct SetDLog {
+    pub deleted: Vec<Vec<u8>>,
+}
+impl DeleteLog for SetDLog {
+    fn is_deleted(&self, key: &[u8]) -> bool {
+        for d in &self.deleted {
+            if key.starts_with(d) {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -113,25 +130,37 @@ pub struct Reader {
     number_of_embeddings: usize,
     version: SystemTime,
     dimension: Option<u64>,
+    segment_versions: HashMap<DpId, i64>,
+    deletions: Vec<(Vec<u8>, i64)>,
 }
 
 impl Reader {
+    fn load_state(path: &Path) -> State {
+        let mut dp = vec![];
+        for f in read_dir(path).unwrap().flatten() {
+            if f.metadata().unwrap().is_dir() {
+                dp.push(uuid::Uuid::parse_str(f.file_name().to_str().unwrap()).unwrap());
+            }
+        }
+        State {
+            delete_log: DTrie::new(),
+            data_point_list: dp,
+        }
+    }
+
     pub fn open(path: &Path) -> VectorR<Reader> {
         let lock_path = path.join(OPENING_FLAG);
         let lock_file = File::create(lock_path)?;
         lock_file.lock_shared()?;
 
-        let metadata = IndexMetadata::open(path)?.map(Ok).unwrap_or_else(|| {
-            // Old indexes may not have this file so in that case the
-            // metadata file they should have is created.
-            let metadata = IndexMetadata::default();
-            metadata.write(path).map(|_| metadata)
-        })?;
+        let metadata = IndexMetadata {
+            similarity: data_point::Similarity::Dot,
+            channel: nucliadb_core::Channel::STABLE,
+            normalize_vectors: false,
+        };
 
-        let state_path = path.join(STATE);
-        let state_file = File::open(&state_path)?;
-        let version = last_modified(&state_path)?;
-        let state = read_state(&state_file)?;
+        let version = SystemTime::now();
+        let state = Self::load_state(path);
         let data_point_list = state.data_point_list;
         let delete_log = state.delete_log;
         let mut dimension = None;
@@ -163,19 +192,16 @@ impl Reader {
             number_of_embeddings,
             dimension,
             path: path.to_path_buf(),
+            segment_versions: HashMap::new(),
+            deletions: Vec::new(),
         })
     }
 
-    pub fn update(&mut self) -> VectorR<()> {
-        let state_path = self.path.join(STATE);
-        let disk_version = last_modified(&state_path)?;
+    pub fn update(&mut self, segments: &[(String, i64)], deletions: &[(String, i64)]) -> VectorR<()> {
+        self.deletions = deletions.iter().map(|(rid, time)| (rid.as_bytes().to_vec(), *time)).collect();
+        self.segment_versions = segments.iter().map(|(k, v)| (DpId::parse_str(k).unwrap(), *v)).collect();
 
-        if disk_version == self.version {
-            return Ok(());
-        }
-
-        let state_file = File::open(state_path)?;
-        let state = read_state(&state_file)?;
+        let state = Self::load_state(&self.path);
         let data_point_list = state.data_point_list;
         let new_delete_log = state.delete_log;
         let mut new_dimension = self.dimension;
@@ -217,7 +243,6 @@ impl Reader {
             }
         }
 
-        self.version = disk_version;
         self.delete_log = new_delete_log;
         self.data_point_pins = new_data_point_pins;
         self.dimension = new_dimension;
@@ -250,12 +275,12 @@ impl Reader {
         let min_score = request.min_score();
         let mut ffsv = Fssc::new(request.no_results(), with_duplicates);
 
-        for open_data_point in self.open_data_points.values() {
-            let data_point_journal = open_data_point.journal();
-            let delete_log = TimeSensitiveDLog {
-                time: data_point_journal.time(),
-                dlog: &self.delete_log,
+        for (id, open_data_point) in &self.open_data_points {
+            let time = self.segment_versions[&id];
+            let delete_log = SetDLog {
+                deleted: self.deletions.iter().filter(|(_, t)| t > &time).map(|(a, _)| a.clone()).collect(),
             };
+
             // Skipping the formatter only because the search interface is quite bad right now.
             #[rustfmt::skip] let partial_solution = open_data_point.search(
                 &delete_log,

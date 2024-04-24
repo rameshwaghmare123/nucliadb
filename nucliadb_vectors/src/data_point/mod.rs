@@ -629,7 +629,7 @@ impl Neighbour {
 }
 
 pub struct OpenDataPoint {
-    journal: Journal,
+    pub journal: Journal,
     nodes: Mmap,
     index: Mmap,
 }
@@ -679,6 +679,7 @@ impl OpenDataPoint {
         results: usize,
         search_params: SearchParams,
     ) -> impl Iterator<Item = Neighbour> + '_ {
+        // println!("Searching in DP with {} vectors", data_store::stored_elements(&self.nodes));
         let encoded_query = vector::encode_vector(query);
         let tracker = Retriever::new(&encoded_query, &self.nodes, delete_log, search_params);
         let filter = FormulaFilter::new(filter);

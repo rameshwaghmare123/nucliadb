@@ -10,33 +10,35 @@ use nucliadb_node::shards::metadata::ShardMetadata;
 use nucliadb_node::shards::writer::ShardWriter;
 
 use rand::Rng;
-use tempfile::tempdir;
 
 fn random_key() -> String {
     format!("{:032x?}", rand::random::<u128>())
 }
 
-fn resource() -> Resource {
+fn resource(id: usize, counter: u32) -> Resource {
     let mut paragraphs = HashMap::new();
-    for i in 0..rand::thread_rng().gen_range(0..1000) {
-        paragraphs.insert(
-            format!("p{i}"),
-            IndexParagraph {
-                start: i * 100,
-                end: (i + 1) * 100,
-                sentences: [(
-                    "a".into(),
-                    VectorSentence {
-                        vector: vec![1.0, 2.0, 3.0],
-                        ..Default::default()
-                    },
-                )]
-                .into_iter()
-                .collect(),
-                ..Default::default()
-            },
-        );
-    }
+
+    let mut vector = [0.0; 50].to_vec();
+    vector[id] = 1.0;
+
+    let key = format!("r{id}");
+    paragraphs.insert(
+        format!("{key}p{counter}"),
+        IndexParagraph {
+            start: 0,
+            end: 100,
+            sentences: [(
+                format!("{key}ps{counter}"),
+                VectorSentence {
+                    vector: vector.clone(),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        },
+    );
 
     Resource {
         metadata: Some(IndexMetadata {
@@ -45,7 +47,7 @@ fn resource() -> Resource {
         }),
         resource: Some(ResourceId {
             shard_id: "patata".into(),
-            uuid: random_key(),
+            uuid: key.clone(),
         }),
         paragraphs: [(
             "f/text".into(),
@@ -55,6 +57,7 @@ fn resource() -> Resource {
         )]
         .into_iter()
         .collect(),
+        sentences_to_delete: vec![key],
         ..Default::default()
     }
 }
@@ -69,13 +72,27 @@ fn main() -> anyhow::Result<()> {
         None,
         false,
     );
-    let sw = ShardWriter::open(Arc::new(metadata))?;
+    let metadata2 = ShardMetadata::new(
+        tmp_dir.join("shard"),
+        "patata".into(),
+        None,
+        nucliadb_node::shards::metadata::Similarity::Dot,
+        None,
+        false,
+    );
 
+    let sw = match ShardWriter::open(Arc::new(metadata)) {
+        Ok(s) => s,
+        Err(_) => ShardWriter::new(Arc::new(metadata2)).unwrap(),
+    };
+
+    let mut i = 0;
     loop {
         let t = Instant::now();
-        sw.set_resource(resource())?;
+        sw.set_resource(resource(rand::thread_rng().gen_range(0..10), i))?;
         println!("Indexing took {:?}", t.elapsed());
-        thread::sleep(Duration::from_millis(250));
+        thread::sleep(Duration::from_millis(20));
+        i += 1;
     }
 
     Ok(())

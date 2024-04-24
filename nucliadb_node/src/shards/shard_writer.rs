@@ -292,7 +292,17 @@ impl ShardWriter {
             debug!("Vector service ends set_resource");
             tokio::runtime::Builder::new_current_thread().enable_time().build()?.block_on(async {
                 self.upload(&result).await?;
-                self.metadb.register_segment(result.file_name().unwrap().to_string_lossy().into_owned()).await
+                // let opstamp =
+                //     self.metadb.register_segment(result.file_name().unwrap().to_string_lossy().into_owned()).await?;
+                // self.metadb.record_deletions(opstamp, &resource.sentences_to_delete).await?;
+                self.metadb
+                    .record_segment_deletions(
+                        result.file_name().unwrap().to_string_lossy().into_owned(),
+                        &resource.sentences_to_delete,
+                    )
+                    .await?;
+
+                Ok(())
             })
         };
 
@@ -315,7 +325,7 @@ impl ShardWriter {
 
         let mut text_result = Ok(());
         let mut paragraph_result = Ok(());
-        let mut vector_result = Ok(());
+        let mut vector_result: NodeResult<()> = Ok(());
         let mut relation_result = Ok(());
 
         let _lock = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());

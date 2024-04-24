@@ -61,7 +61,7 @@ impl Debug for VectorReaderService {
 
 impl VectorReader for VectorReaderService {
     fn update(&mut self) -> NodeResult<()> {
-        self.index.update()?;
+        // self.index.update()?;
         Ok(())
     }
 
