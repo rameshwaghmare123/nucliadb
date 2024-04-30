@@ -31,6 +31,7 @@ use nucliadb_core::vectors::*;
 use nucliadb_core::{thread, IndexFiles};
 use nucliadb_procs::measure;
 use nucliadb_vectors::VectorErr;
+use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
 use tokio::io::AsyncWriteExt;
@@ -126,8 +127,14 @@ impl ShardWriter {
         let vectors = vector_result.transpose()?;
         let relations = relation_result.transpose()?;
         let _ = std::fs::create_dir(metadata.shard_path().join("objects"));
-        let object_store = Arc::new(LocalFileSystem::new_with_prefix(metadata.shard_path().join("objects"))?);
-        let metadb = tokio::runtime::Builder::new_current_thread().enable_time().build()?.block_on(MetaDB::new())?;
+        let object_store = Arc::new(
+            GoogleCloudStorageBuilder::new()
+                .with_service_account_path("/home/javier/Downloads/stashify-218417-bd8ce969c8de.json")
+                .with_bucket_name("testgcs0")
+                .build()?,
+        );
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().enable_io().build()?;
+        let metadb = rt.block_on(MetaDB::new())?;
 
         Ok(ShardWriter {
             id: metadata.id(),
@@ -288,7 +295,7 @@ impl ShardWriter {
             let mut writer = write_rw_lock(&self.vector_writer);
             let result = writer.set_resource(&resource)?.unwrap();
             debug!("Vector service ends set_resource");
-            tokio::runtime::Builder::new_current_thread().enable_time().build()?.block_on(async {
+            tokio::runtime::Builder::new_current_thread().enable_time().enable_io().build()?.block_on(async {
                 self.upload(&result).await?;
                 // let opstamp =
                 //     self.metadb.register_segment(result.file_name().unwrap().to_string_lossy().into_owned()).await?;

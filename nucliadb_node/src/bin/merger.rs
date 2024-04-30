@@ -9,6 +9,7 @@ use nucliadb_core::protos::Resource;
 use nucliadb_node::metadb::MetaDB;
 use nucliadb_vectors::data_point::{self, merge, open, DataPointPin};
 use nucliadb_vectors::data_point_provider::reader::SetDLog;
+use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::local::LocalFileSystem;
 use object_store::{path, ObjectStore};
 use rand::Rng;
@@ -51,7 +52,12 @@ async fn main() -> anyhow::Result<()> {
         let t = Instant::now();
         println!("Merging {} segments", segments.len());
         let mut tasks = JoinSet::new();
-        let storage = Arc::new(LocalFileSystem::new_with_prefix(Path::new("/tmp/shards/shard/objects"))?);
+        let storage = Arc::new(
+            GoogleCloudStorageBuilder::new()
+                .with_service_account_path("/home/javier/Downloads/stashify-218417-bd8ce969c8de.json")
+                .with_bucket_name("testgcs0")
+                .build()?,
+        );
         for s in segments.clone() {
             let wp = working_path.path().to_owned();
             let storage = storage.clone();

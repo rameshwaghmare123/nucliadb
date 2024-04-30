@@ -10,6 +10,7 @@ use nucliadb_node::metadb::MetaDB;
 use nucliadb_vectors::data_point_provider::reader::Reader;
 use nucliadb_vectors::data_point_provider::SearchRequest;
 use nucliadb_vectors::formula::Formula;
+use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
 use tempfile::tempdir;
@@ -44,8 +45,14 @@ impl SearchRequest for Search {
 }
 
 fn update_thread(working_path: PathBuf, reader: Arc<Mutex<Reader>>) {
-    let storage = Arc::new(LocalFileSystem::new_with_prefix(Path::new("/tmp/shards/shard/objects")).unwrap());
-    let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let storage = Arc::new(
+        GoogleCloudStorageBuilder::new()
+            .with_service_account_path("/home/javier/Downloads/stashify-218417-bd8ce969c8de.json")
+            .with_bucket_name("testgcs0")
+            .build()
+            .unwrap(),
+    );
+    let rt = tokio::runtime::Builder::new_current_thread().enable_time().enable_io().build().unwrap();
     let meta = rt.block_on(MetaDB::new()).unwrap();
     let mut last_segments = HashSet::new();
     loop {
@@ -100,7 +107,7 @@ fn main() -> anyhow::Result<()> {
     std::thread::spawn(|| update_thread(wp, r));
 
     let mut latest: HashMap<usize, u32> = HashMap::new();
-    thread::sleep(Duration::from_secs(2));
+    thread::sleep(Duration::from_secs(20));
     loop {
         let vector = [0.0; 50].to_vec();
         for resource in 0..10 {
