@@ -18,7 +18,6 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 //
 use crate::query_io;
-use crate::set_query::SetQuery;
 use itertools::Itertools;
 use nucliadb_core::paragraphs::ParagraphsContext;
 use nucliadb_core::protos::prost_types::Timestamp as ProstTimestamp;
@@ -31,7 +30,6 @@ use tantivy::query::*;
 use tantivy::schema::{Facet, Field, IndexRecordOption};
 use tantivy::{DocId, InvertedIndexReader, Term};
 
-use crate::fuzzy_query::FuzzyTermQuery;
 use crate::schema::{self, ParagraphSchema};
 use crate::stop_words::is_stop_word;
 type QueryP = (Occur, Box<dyn Query>);
@@ -97,31 +95,8 @@ impl SharedTermC {
     }
 }
 
-fn term_to_fuzzy(query: Box<dyn Query>, distance: u8, termc: SharedTermC, as_prefix: bool) -> Box<dyn Query> {
-    let term_query: &TermQuery = query.downcast_ref().unwrap();
-    let term = term_query.term().clone();
-    let term_as_str = term.as_str();
-    let should_be_prefixed = term_as_str.map(|s| as_prefix && s.len() > 3).unwrap_or_default();
-    if should_be_prefixed {
-        Box::new(FuzzyTermQuery::new_prefix(term, distance, true, termc))
-    } else {
-        Box::new(FuzzyTermQuery::new(term, distance, true, termc))
-    }
-}
-
 fn queryp_map(queries: Vec<QueryP>, distance: u8, as_prefix: Option<usize>, termc: SharedTermC) -> Vec<QueryP> {
-    queries
-        .into_iter()
-        .enumerate()
-        .map(|(id, (_, query))| {
-            let query = if query.is::<TermQuery>() {
-                term_to_fuzzy(query, distance, termc.clone(), as_prefix.map_or(false, |v| id == v))
-            } else {
-                query
-            };
-            (Occur::Must, query)
-        })
-        .collect()
+    queries.into_iter().enumerate().map(|(id, (_, query))| (Occur::Must, query)).collect()
 }
 
 fn flat_bool_query(query: BooleanQuery, collector: (usize, Vec<QueryP>)) -> (usize, Vec<QueryP>) {
@@ -270,19 +245,7 @@ fn produce_date_range_query(
     from: Option<ProstTimestamp>,
     to: Option<ProstTimestamp>,
 ) -> Option<RangeQuery> {
-    if from.is_none() && to.is_none() {
-        return None;
-    }
-
-    let left_date_time = from.map(|t| schema::timestamp_to_datetime_utc(&t));
-    let right_date_time = to.map(|t| schema::timestamp_to_datetime_utc(&t));
-    let left_term = left_date_time.map(|t| Term::from_field_date(field, &t));
-    let right_term = right_date_time.map(|t| Term::from_field_date(field, &t));
-    let left_bound = left_term.map(Bound::Included).unwrap_or(Bound::Unbounded);
-    let right_bound = right_term.map(Bound::Included).unwrap_or(Bound::Unbounded);
-    let xtype = tantivy::schema::Type::Date;
-    let query = RangeQuery::new_term_bounds(field, xtype, &left_bound, &right_bound);
-    Some(query)
+    None
 }
 
 pub fn suggest_query(
@@ -330,20 +293,6 @@ pub fn suggest_query(
             fuzzies.push((Occur::Must, Box::new(facet_term_query.clone())));
             originals.push((Occur::Must, Box::new(facet_term_query)));
         });
-
-    if !request.key_filters.is_empty() {
-        let (field_ids, resource_ids) = request.key_filters.iter().cloned().partition::<Vec<_>, _>(|k| k.contains('/'));
-        if !field_ids.is_empty() {
-            let set_query = Box::new(SetQuery::new(schema.field_uuid, field_ids));
-            fuzzies.push((Occur::Must, set_query.clone()));
-            originals.push((Occur::Must, set_query.clone()));
-        }
-        if !resource_ids.is_empty() {
-            let set_query = Box::new(SetQuery::new(schema.uuid, resource_ids));
-            fuzzies.push((Occur::Must, set_query.clone()));
-            originals.push((Occur::Must, set_query.clone()));
-        }
-    }
 
     if originals.len() == 1 && originals[0].1.is::<AllQuery>() {
         let original = originals.pop().unwrap().1;
@@ -433,20 +382,6 @@ pub fn search_query(
         let query = query_io::translate_expression(formula, schema);
         fuzzies.push((Occur::Must, query.box_clone()));
         originals.push((Occur::Must, query));
-    }
-
-    if !search.key_filters.is_empty() {
-        let (field_ids, resource_ids) = search.key_filters.iter().cloned().partition::<Vec<_>, _>(|k| k.contains('/'));
-        if !field_ids.is_empty() {
-            let set_query = Box::new(SetQuery::new(schema.field_uuid, field_ids));
-            fuzzies.push((Occur::Must, set_query.clone()));
-            originals.push((Occur::Must, set_query.clone()));
-        }
-        if !resource_ids.is_empty() {
-            let set_query = Box::new(SetQuery::new(schema.uuid, resource_ids));
-            fuzzies.push((Occur::Must, set_query.clone()));
-            originals.push((Occur::Must, set_query.clone()));
-        }
     }
 
     if originals.len() == 1 && originals[0].1.is::<AllQuery>() {

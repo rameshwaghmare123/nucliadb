@@ -29,16 +29,19 @@ use nucliadb_core::protos::prost::Message;
 use nucliadb_core::protos::resource::ResourceStatus;
 use nucliadb_core::protos::{Resource, ResourceId};
 use nucliadb_core::tracing::{self, *};
+use nucliadb_core::RawReplicaState;
 use nucliadb_core::{tantivy_replica, IndexFiles};
 use nucliadb_procs::measure;
 use regex::Regex;
 use tantivy::collector::Count;
 use tantivy::query::AllQuery;
 use tantivy::schema::*;
+use tantivy::SingleSegmentIndexWriter;
 use tantivy::{doc, Index, IndexSettings, IndexSortByField, IndexWriter, Order};
+use tempfile::tempdir;
 
 use super::schema::ParagraphSchema;
-use crate::schema::timestamp_to_datetime_utc;
+
 use crate::search_response::is_label;
 
 lazy_static::lazy_static! {
@@ -48,7 +51,6 @@ lazy_static::lazy_static! {
 pub struct ParagraphWriterService {
     pub index: Index,
     pub schema: ParagraphSchema,
-    writer: IndexWriter,
     config: ParagraphConfig,
 }
 
@@ -80,6 +82,11 @@ impl ParagraphWriter for ParagraphWriterService {
     #[measure(actor = "paragraphs", metric = "set_resource")]
     #[tracing::instrument(skip_all)]
     fn set_resource(&mut self, resource: &Resource) -> NodeResult<()> {
+        let index = Index::builder().schema(self.schema.schema.clone()).create_in_dir("/tmp/para3")?;
+
+        let mut segment_writer: tantivy::SingleSegmentIndexWriter<TantivyDocument> =
+            tantivy::SingleSegmentIndexWriter::new(index, 100 * 1024 * 1024)?;
+
         let time = Instant::now();
         let id = Some(&resource.shard_id);
 
@@ -87,7 +94,7 @@ impl ParagraphWriter for ParagraphWriterService {
             let v = time.elapsed().as_millis();
             debug!("{id:?} - Indexing paragraphs: starts at {v} ms");
 
-            let _ = self.index_paragraph(resource);
+            let _ = self.index_paragraph(resource, &mut segment_writer);
             let v = time.elapsed().as_millis();
             debug!("{id:?} - Indexing paragraphs: ends at {v} ms");
         }
@@ -97,7 +104,7 @@ impl ParagraphWriter for ParagraphWriterService {
 
         for paragraph_id in &resource.paragraphs_to_delete {
             let uuid_term = Term::from_field_text(self.schema.paragraph, paragraph_id);
-            self.writer.delete_term(uuid_term);
+            // segment_writer.delete_term(uuid_term);
         }
         let v = time.elapsed().as_millis();
         debug!("{id:?} - Processing paragraphs to delete: ends at {v} ms");
@@ -105,9 +112,11 @@ impl ParagraphWriter for ParagraphWriterService {
         let v = time.elapsed().as_millis();
         debug!("{id:?} - Commit: starts at {v} ms");
 
-        self.writer.commit()?;
+        // segment_writer.commit()?;
         let v = time.elapsed().as_millis();
         debug!("{id:?} - Commit: ends at {v} ms");
+
+        segment_writer.finalize()?;
 
         Ok(())
     }
@@ -123,14 +132,14 @@ impl ParagraphWriter for ParagraphWriterService {
         let v = time.elapsed().as_millis();
         debug!("{id:?} - Delete term: starts at {v} ms");
 
-        self.writer.delete_term(uuid_term);
+        // segment_writer.delete_term(uuid_term);
         let v = time.elapsed().as_millis();
         debug!("{id:?} - Delete term: ends at {v} ms");
 
         let v = time.elapsed().as_millis();
         debug!("{id:?} - Commit: starts at {v} ms");
 
-        self.writer.commit()?;
+        // segment_writer.commit()?;
         let v = time.elapsed().as_millis();
         debug!("{id:?} - Commit: ends at {v} ms");
 
@@ -150,8 +159,8 @@ impl ParagraphWriter for ParagraphWriterService {
             path: &self.config.path,
             on_replica: ignored_segment_ids,
         };
-        let safe_state = tantivy_replica::compute_safe_replica_state(params, &self.index)?;
-        Ok(IndexFiles::Tantivy(safe_state))
+        // let safe_state = tantivy_replica::compute_safe_replica_state(params, &self.index)?;
+        Ok(IndexFiles::Other(RawReplicaState::default()))
     }
 }
 
@@ -190,11 +199,10 @@ impl ParagraphWriterService {
         index_builder = index_builder.settings(settings);
         let index = index_builder.create_in_dir(&config.path)?;
 
-        let writer = index.writer_with_num_threads(1, 6_000_000)?;
+        // let writer = index.writer_with_num_threads(1, 6_000_000)?;
 
         Ok(ParagraphWriterService {
             index,
-            writer,
             schema: paragraph_schema,
             config: config.clone(),
         })
@@ -205,17 +213,20 @@ impl ParagraphWriterService {
 
         let index = Index::open_in_dir(&config.path)?;
 
-        let writer = index.writer_with_num_threads(1, 6_000_000)?;
+        // let writer = index.writer_with_num_threads(1, 6_000_000)?;
 
         Ok(ParagraphWriterService {
             index,
-            writer,
             schema: paragraph_schema,
             config: config.clone(),
         })
     }
 
-    fn index_paragraph(&mut self, resource: &Resource) -> NodeResult<()> {
+    fn index_paragraph(
+        &mut self,
+        resource: &Resource,
+        segment_writer: &mut SingleSegmentIndexWriter<TantivyDocument>,
+    ) -> NodeResult<()> {
         let Some(metadata) = resource.metadata.as_ref() else {
             return Err(node_error!("Missing resource metadata"));
         };
@@ -268,8 +279,7 @@ impl ParagraphWriterService {
 
                 let mut doc = doc!(
                     self.schema.uuid => resource.resource.as_ref().expect("Missing resource details").uuid.as_str(),
-                    self.schema.modified => timestamp_to_datetime_utc(modified),
-                    self.schema.created => timestamp_to_datetime_utc(created),
+
                     self.schema.status => resource.status as u64,
                     self.schema.repeated_in_field => p.repeated_in_field as u64,
                 );
@@ -292,11 +302,11 @@ impl ParagraphWriterService {
                 doc.add_text(self.schema.split, split);
                 doc.add_text(self.schema.field_uuid, format!("{}/{}", resource.resource.as_ref().unwrap().uuid, field));
 
-                self.writer.delete_term(paragraph_term);
-                self.writer.add_document(doc)?;
-                if paragraph_counter % 500 == 0 {
-                    self.writer.commit()?;
-                }
+                // segment_writer.delete_term(paragraph_term);
+                segment_writer.add_document(doc)?;
+                // if paragraph_counter % 500 == 0 {
+                //     segment_writer.commit()?;
+                // }
             }
         }
         Ok(())

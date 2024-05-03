@@ -127,12 +127,7 @@ impl ShardWriter {
         let vectors = vector_result.transpose()?;
         let relations = relation_result.transpose()?;
         let _ = std::fs::create_dir(metadata.shard_path().join("objects"));
-        let object_store = Arc::new(
-            GoogleCloudStorageBuilder::new()
-                .with_service_account_path("/home/javier/Downloads/stashify-218417-bd8ce969c8de.json")
-                .with_bucket_name("testgcs0")
-                .build()?,
-        );
+        let object_store = Arc::new(LocalFileSystem::new_with_prefix("/tmp/objects")?);
         let rt = tokio::runtime::Builder::new_current_thread().enable_time().enable_io().build()?;
         let metadb = rt.block_on(MetaDB::new())?;
 
@@ -264,6 +259,8 @@ impl ShardWriter {
         let mut x = archive.into_inner().await?;
         x.shutdown().await?;
 
+        println!("Uploaded {path:?}");
+
         Ok(())
     }
 
@@ -282,12 +279,26 @@ impl ShardWriter {
             result
         };
 
+        fn random_key() -> String {
+            format!("{:032x?}", rand::random::<u128>())
+        }
+
         let paragraph_task = || {
             debug!("Paragraph service starts set_resource");
             let mut writer = write_rw_lock(&self.paragraph_writer);
+            let _ = std::fs::remove_dir_all("/tmp/para3");
+            let _ = std::fs::create_dir("/tmp/para3");
             let result = writer.set_resource(&resource);
             debug!("Paragraph service ends set_resource");
-            result
+            tokio::runtime::Builder::new_current_thread().enable_time().enable_io().build()?.block_on(async {
+                let random_key = random_key();
+                std::fs::rename("/tmp/para3", format!("/tmp/para_{random_key}")).unwrap();
+                self.upload(Path::new(&format!("/tmp/para_{random_key}"))).await?;
+                let opstamp = self.metadb.register_segment(random_key).await?;
+                // self.metadb.record_deletions(opstamp, &resource.sentences_to_delete).await?;
+
+                Ok(())
+            })
         };
 
         let vector_task = || {
@@ -331,7 +342,7 @@ impl ShardWriter {
         let relation_task = || run_with_telemetry(info, relation_task);
 
         let mut text_result = Ok(());
-        let mut paragraph_result = Ok(());
+        let mut paragraph_result: NodeResult<()> = Ok(());
         let mut vector_result: NodeResult<()> = Ok(());
         let mut relation_result = Ok(());
 

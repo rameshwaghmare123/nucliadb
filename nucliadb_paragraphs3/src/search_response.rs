@@ -24,13 +24,13 @@ use lazy_static::lazy_static;
 use nucliadb_core::protos::{FacetResult, FacetResults, ParagraphResult, ParagraphSearchResponse, ResultScore};
 use nucliadb_core::tracing::*;
 use tantivy::collector::FacetCounts;
-use tantivy::schema::{Facet, Value};
-use tantivy::DocAddress;
+use tantivy::schema::{Facet, OwnedValue, Value};
+use tantivy::{DocAddress, TantivyDocument};
 
 use crate::reader::ParagraphReaderService;
 use crate::search_query::TermCollector;
 
-pub fn extract_labels<'a>(facets_iterator: impl Iterator<Item = &'a Value>) -> Vec<String> {
+pub fn extract_labels<'a>(facets_iterator: impl Iterator<Item = &'a OwnedValue>) -> Vec<String> {
     facets_iterator.flat_map(|x| x.as_facet()).filter(|x| is_label(x)).map(|x| x.to_path_string()).collect_vec()
 }
 
@@ -78,7 +78,7 @@ pub struct SearchBm25Response<'a> {
     pub page_number: i32,
     pub results_per_page: i32,
     pub termc: TermCollector,
-    pub searcher: tantivy::LeasedItem<tantivy::Searcher>,
+    pub searcher: tantivy::Searcher,
     pub min_score: f32,
 }
 
@@ -92,7 +92,7 @@ pub struct SearchIntResponse<'a> {
     pub page_number: i32,
     pub results_per_page: i32,
     pub termc: TermCollector,
-    pub searcher: tantivy::LeasedItem<tantivy::Searcher>,
+    pub searcher: tantivy::Searcher,
 }
 
 pub struct SearchFacetsResponse<'a> {
@@ -122,9 +122,9 @@ impl<'a> From<SearchIntResponse<'a>> for ParagraphSearchResponse {
         let no_results = std::cmp::min(obtained, requested);
         let mut results: Vec<ParagraphResult> = Vec::with_capacity(no_results);
         let searcher = response.searcher;
-        let default_split = Value::Str("".to_string());
+        let default_split = OwnedValue::Str("".to_string());
         for (_, doc_address) in response.top_docs.into_iter().take(no_results) {
-            match searcher.doc(doc_address) {
+            match searcher.doc::<TantivyDocument>(doc_address) {
                 Ok(doc) => {
                     let score = ResultScore {
                         bm25: 0.0,
@@ -134,7 +134,7 @@ impl<'a> From<SearchIntResponse<'a>> for ParagraphSearchResponse {
                     let uuid = doc
                         .get_first(schema.uuid)
                         .expect("document doesn't appear to have uuid.")
-                        .as_text()
+                        .as_str()
                         .unwrap()
                         .to_string();
 
@@ -149,7 +149,8 @@ impl<'a> From<SearchIntResponse<'a>> for ParagraphSearchResponse {
                         .unwrap()
                         .to_path_string();
 
-                    let labels = extract_labels(doc.get_all(schema.facets));
+                    let x = doc.get_all(schema.facets);
+                    let labels = vec![]; //extract_labels(x);
 
                     let start_pos = doc.get_first(schema.start_pos).unwrap().as_u64().unwrap();
 
@@ -158,11 +159,11 @@ impl<'a> From<SearchIntResponse<'a>> for ParagraphSearchResponse {
                     let paragraph = doc
                         .get_first(schema.paragraph)
                         .expect("document doesn't appear to have end_pos.")
-                        .as_text()
+                        .as_str()
                         .unwrap()
                         .to_string();
 
-                    let split = doc.get_first(schema.split).unwrap_or(&default_split).as_text().unwrap().to_string();
+                    let split = doc.get_first(schema.split).unwrap_or(&default_split).as_str().unwrap().to_string();
 
                     let index = doc.get_first(schema.index).unwrap().as_u64().unwrap();
                     let mut terms: Vec<_> = response.termc.get_fterms(doc_address.doc_id).into_iter().collect();
@@ -212,9 +213,9 @@ impl<'a> From<SearchBm25Response<'a>> for ParagraphSearchResponse {
         let no_results = std::cmp::min(obtained, requested);
         let mut results: Vec<ParagraphResult> = Vec::with_capacity(no_results);
         let searcher = response.searcher;
-        let default_split = Value::Str("".to_string());
+        let default_split = OwnedValue::Str("".to_string());
         for (score, doc_address) in response.top_docs.into_iter().take(no_results) {
-            match searcher.doc(doc_address) {
+            match searcher.doc::<TantivyDocument>(doc_address) {
                 Ok(doc) => {
                     let score = ResultScore {
                         bm25: score,
@@ -224,7 +225,7 @@ impl<'a> From<SearchBm25Response<'a>> for ParagraphSearchResponse {
                     let uuid = doc
                         .get_first(schema.uuid)
                         .expect("document doesn't appear to have uuid.")
-                        .as_text()
+                        .as_str()
                         .unwrap()
                         .to_string();
 
@@ -239,7 +240,7 @@ impl<'a> From<SearchBm25Response<'a>> for ParagraphSearchResponse {
                         .unwrap()
                         .to_path_string();
 
-                    let labels = extract_labels(doc.get_all(schema.facets));
+                    let labels = vec![]; //extract_labels(doc.get_all(schema.facets));
 
                     let start_pos = doc.get_first(schema.start_pos).unwrap().as_u64().unwrap();
 
@@ -248,11 +249,11 @@ impl<'a> From<SearchBm25Response<'a>> for ParagraphSearchResponse {
                     let paragraph = doc
                         .get_first(schema.paragraph)
                         .expect("document doesn't appear to have end_pos.")
-                        .as_text()
+                        .as_str()
                         .unwrap()
                         .to_string();
 
-                    let split = doc.get_first(schema.split).unwrap_or(&default_split).as_text().unwrap().to_string();
+                    let split = doc.get_first(schema.split).unwrap_or(&default_split).as_str().unwrap().to_string();
 
                     let index = doc.get_first(schema.index).unwrap().as_u64().unwrap();
                     let mut terms: Vec<_> = response.termc.get_fterms(doc_address.doc_id).into_iter().collect();

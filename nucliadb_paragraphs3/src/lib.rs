@@ -18,12 +18,10 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 //
 
-pub mod fuzzy_query;
 pub mod query_io;
 pub mod reader;
 pub mod schema;
 pub mod search_query;
 pub mod search_response;
-mod set_query;
 pub mod stop_words;
 pub mod writer;

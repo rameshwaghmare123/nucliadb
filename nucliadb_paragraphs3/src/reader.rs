@@ -30,8 +30,9 @@ use nucliadb_procs::measure;
 use search_query::{search_query, suggest_query};
 use tantivy::collector::{Collector, Count, DocSetCollector, FacetCollector, TopDocs};
 use tantivy::query::{AllQuery, Query, QueryParser};
+use tantivy::schema::Value;
 use tantivy::schema::*;
-use tantivy::{DocAddress, Index, IndexReader, LeasedItem, ReloadPolicy};
+use tantivy::{DocAddress, Index, IndexReader, ReloadPolicy};
 
 use super::schema::ParagraphSchema;
 use crate::search_query;
@@ -233,7 +234,10 @@ impl ParagraphReader for ParagraphReaderService {
         let mut keys = vec![];
         let searcher = self.reader.searcher();
         for addr in searcher.search(&AllQuery, &DocSetCollector)? {
-            let Some(key) = searcher.doc(addr)?.get_first(self.schema.uuid).and_then(|i| i.as_text().map(String::from))
+            let Some(key) = searcher
+                .doc::<TantivyDocument>(addr)?
+                .get_first(self.schema.uuid)
+                .and_then(|i| i.as_str().map(String::from))
             else {
                 continue;
             };
@@ -252,7 +256,7 @@ impl ParagraphReaderService {
         }
         let paragraph_schema = ParagraphSchema::default();
         let index = Index::open_in_dir(&config.path)?;
-        let reader = index.reader_builder().reload_policy(ReloadPolicy::OnCommit).try_into()?;
+        let reader = index.reader_builder().reload_policy(ReloadPolicy::OnCommitWithDelay).try_into()?;
         Ok(ParagraphReaderService {
             index,
             reader,
@@ -279,7 +283,7 @@ pub struct BatchProducer {
     paragraph_field: Field,
     facet_field: Field,
     query: Box<dyn Query>,
-    searcher: LeasedItem<tantivy::Searcher>,
+    searcher: tantivy::Searcher,
 }
 impl BatchProducer {
     const BATCH: usize = 1000;
@@ -300,11 +304,11 @@ impl Iterator for BatchProducer {
             return None;
         };
         let mut items = vec![];
-        for doc in top_docs.into_iter().flat_map(|i| self.searcher.doc(i.1)) {
+        for doc in top_docs.into_iter().flat_map(|i| self.searcher.doc::<TantivyDocument>(i.1)) {
             let id = doc
                 .get_first(self.paragraph_field)
                 .expect("document doesn't appear to have uuid.")
-                .as_text()
+                .as_str()
                 .unwrap()
                 .to_string();
 
@@ -332,28 +336,6 @@ struct Searcher<'a> {
     only_faceted: bool,
 }
 impl<'a> Searcher<'a> {
-    fn custom_order_collector(
-        &self,
-        order: OrderBy,
-        limit: usize,
-        offset: usize,
-    ) -> impl Collector<Fruit = Vec<(u64, DocAddress)>> {
-        use tantivy::fastfield::{FastFieldReader, FastValue};
-        use tantivy::{DocId, SegmentReader};
-        let created = self.schema.created;
-        let modified = self.schema.modified;
-        let sorter = match order.r#type() {
-            OrderType::Desc => |t: u64| t,
-            OrderType::Asc => |t: u64| u64::MAX - t,
-        };
-        TopDocs::with_limit(limit).and_offset(offset).custom_score(move |segment_reader: &SegmentReader| {
-            let reader = match order.sort_by() {
-                OrderField::Created => segment_reader.fast_fields().date(created).unwrap(),
-                OrderField::Modified => segment_reader.fast_fields().date(modified).unwrap(),
-            };
-            move |doc: DocId| sorter(reader.get(doc).to_u64())
-        })
-    }
     fn do_search(
         &self,
         termc: SharedTermC,
@@ -362,11 +344,10 @@ impl<'a> Searcher<'a> {
         min_score: f32,
     ) -> NodeResult<ProtosResponse> {
         let searcher = service.reader.searcher();
-        let facet_collector =
-            self.facets.iter().fold(FacetCollector::for_field(service.schema.facets), |mut collector, facet| {
-                collector.add_facet(Facet::from(facet));
-                collector
-            });
+        let facet_collector = self.facets.iter().fold(FacetCollector::for_field("facets"), |mut collector, facet| {
+            collector.add_facet(Facet::from(facet));
+            collector
+        });
         if self.only_faceted {
             // No query search, just facets
             let facets_count = searcher.search(&query, &facet_collector).unwrap();
@@ -378,83 +359,41 @@ impl<'a> Searcher<'a> {
         } else if self.facets.is_empty() {
             // Only query no facets
             let extra_result = self.results + 1;
-            match self.request.order.clone() {
-                Some(order) => {
-                    let custom_collector = self.custom_order_collector(order, extra_result, self.offset);
-                    let collector = &(Count, custom_collector);
-                    let (total, top_docs) = searcher.search(&query, collector)?;
-                    Ok(ProtosResponse::from(SearchIntResponse {
-                        total,
-                        facets_count: None,
-                        facets: self.facets.to_vec(),
-                        top_docs,
-                        termc: termc.get_termc(),
-                        text_service: service,
-                        query: self.text,
-                        page_number: self.request.page_number,
-                        results_per_page: self.results as i32,
-                        searcher,
-                    }))
-                }
-                None => {
-                    let topdocs_collector = TopDocs::with_limit(extra_result).and_offset(self.offset);
-                    let collector = &(Count, topdocs_collector);
-                    let (total, top_docs) = searcher.search(&query, collector)?;
-                    Ok(ProtosResponse::from(SearchBm25Response {
-                        total,
-                        facets_count: None,
-                        facets: self.facets.to_vec(),
-                        top_docs,
-                        termc: termc.get_termc(),
-                        text_service: service,
-                        query: self.text,
-                        page_number: self.request.page_number,
-                        results_per_page: self.results as i32,
-                        searcher,
-                        min_score,
-                    }))
-                }
-            }
+            let topdocs_collector = TopDocs::with_limit(extra_result).and_offset(self.offset);
+            let collector = &(Count, topdocs_collector);
+            let (total, top_docs) = searcher.search(&query, collector)?;
+            Ok(ProtosResponse::from(SearchBm25Response {
+                total,
+                facets_count: None,
+                facets: self.facets.to_vec(),
+                top_docs,
+                termc: termc.get_termc(),
+                text_service: service,
+                query: self.text,
+                page_number: self.request.page_number,
+                results_per_page: self.results as i32,
+                searcher,
+                min_score,
+            }))
         } else {
             let extra_result = self.results + 1;
 
-            match self.request.order.clone() {
-                Some(order) => {
-                    let custom_collector = self.custom_order_collector(order, extra_result, self.offset);
-                    let collector = &(Count, facet_collector, custom_collector);
-                    let (total, facets_count, top_docs) = searcher.search(&query, collector)?;
-                    Ok(ProtosResponse::from(SearchIntResponse {
-                        total,
-                        top_docs,
-                        facets_count: Some(facets_count),
-                        facets: self.facets.to_vec(),
-                        termc: termc.get_termc(),
-                        text_service: service,
-                        query: self.text,
-                        page_number: self.request.page_number,
-                        results_per_page: self.results as i32,
-                        searcher,
-                    }))
-                }
-                None => {
-                    let topdocs_collector = TopDocs::with_limit(extra_result).and_offset(self.offset);
-                    let collector = &(Count, facet_collector, topdocs_collector);
-                    let (total, facets_count, top_docs) = searcher.search(&query, collector)?;
-                    Ok(ProtosResponse::from(SearchBm25Response {
-                        total,
-                        top_docs,
-                        facets_count: Some(facets_count),
-                        facets: self.facets.to_vec(),
-                        termc: termc.get_termc(),
-                        text_service: service,
-                        query: self.text,
-                        page_number: self.request.page_number,
-                        results_per_page: self.results as i32,
-                        searcher,
-                        min_score,
-                    }))
-                }
-            }
+            let topdocs_collector = TopDocs::with_limit(extra_result).and_offset(self.offset);
+            let collector = &(Count, facet_collector, topdocs_collector);
+            let (total, facets_count, top_docs) = searcher.search(&query, collector)?;
+            Ok(ProtosResponse::from(SearchBm25Response {
+                total,
+                top_docs,
+                facets_count: Some(facets_count),
+                facets: self.facets.to_vec(),
+                termc: termc.get_termc(),
+                text_service: service,
+                query: self.text,
+                page_number: self.request.page_number,
+                results_per_page: self.results as i32,
+                searcher,
+                min_score,
+            }))
         }
     }
 }

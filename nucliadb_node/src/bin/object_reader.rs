@@ -13,6 +13,13 @@ use nucliadb_vectors::formula::Formula;
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
+use tantivy::directory::MmapDirectory;
+use tantivy::fastfield::AliveBitSet;
+use tantivy::postings::SegmentPostings;
+use tantivy::query::{EnableScoring, Query, TermQuery};
+use tantivy::schema::IndexRecordOption;
+use tantivy::{Index, Segment, SegmentId, SegmentMeta, SegmentReader, Term};
+use tantivy_common::BitSet;
 use tempfile::tempdir;
 use tokio::task::JoinSet;
 use tokio_tar::Archive;
@@ -45,13 +52,7 @@ impl SearchRequest for Search {
 }
 
 fn update_thread(working_path: PathBuf, reader: Arc<Mutex<Reader>>) {
-    let storage = Arc::new(
-        GoogleCloudStorageBuilder::new()
-            .with_service_account_path("/home/javier/Downloads/stashify-218417-bd8ce969c8de.json")
-            .with_bucket_name("testgcs0")
-            .build()
-            .unwrap(),
-    );
+    let storage = Arc::new(LocalFileSystem::new_with_prefix("/tmp/objects").unwrap());
     let rt = tokio::runtime::Builder::new_current_thread().enable_time().enable_io().build().unwrap();
     let meta = rt.block_on(MetaDB::new()).unwrap();
     let mut last_segments = HashSet::new();
@@ -62,9 +63,9 @@ fn update_thread(working_path: PathBuf, reader: Arc<Mutex<Reader>>) {
         let ms = segments.iter().map(|x| x.1).max().unwrap();
         let ds = deletions.iter().map(|x| x.1).max();
 
-        if let Some(ds) = ds {
-            assert_eq!(ms, ds);
-        }
+        // if let Some(ds) = ds {
+        //     assert_eq!(ms, ds);
+        // }
 
         let segment_set: HashSet<_> = segments.iter().map(|x| x.0.clone()).collect();
         if segment_set == last_segments {
@@ -74,11 +75,18 @@ fn update_thread(working_path: PathBuf, reader: Arc<Mutex<Reader>>) {
         for s in segment_set.difference(&last_segments) {
             let wp = working_path.clone();
             let storage = storage.clone();
+            if !s.contains("para") {
+                continue;
+            }
             rt.block_on(async move {
-                let stream = storage.get(&object_store::path::Path::from(s.as_str())).await.unwrap().into_stream();
-                let reader = tokio_util::io::StreamReader::new(stream);
-                let mut unarchiver = Archive::new(reader);
-                unarchiver.unpack(wp.join(s)).await.unwrap();
+                let stream = storage.get(&object_store::path::Path::from(s.as_str())).await;
+                if let Ok(x) = stream {
+                    println!("Ok {}", s);
+                    let stream = x.into_stream();
+                    let reader = tokio_util::io::StreamReader::new(stream);
+                    let mut unarchiver = Archive::new(reader);
+                    unarchiver.unpack(wp.join(s)).await.unwrap();
+                }
             });
         }
 
@@ -88,8 +96,38 @@ fn update_thread(working_path: PathBuf, reader: Arc<Mutex<Reader>>) {
             fs::remove_dir_all(segment_dir).unwrap();
         }
 
-        println!("Updating! to {} segments", segments.len());
-        reader.lock().unwrap().update(&segments, &deletions).unwrap();
+        let (para, vector): (Vec<_>, Vec<_>) = segments.into_iter().partition(|x| x.0.contains("para"));
+
+        println!("{:?}", para.first());
+
+        let index = Index::open_or_create(
+            MmapDirectory::open(&working_path).unwrap(),
+            nucliadb_paragraphs3::schema::ParagraphSchema::new().schema,
+        )
+        .unwrap();
+        let meta = index.new_segment_meta(SegmentId::from_uuid_string(&para[0].0[5..]).unwrap(), 100);
+        let segment = index.segment(meta);
+        let reader = SegmentReader::open(&segment).unwrap();
+        let del_query = TermQuery::new(
+            Term::from_field_text(nucliadb_paragraphs3::schema::ParagraphSchema::new().field_uuid, "patata"),
+            IndexRecordOption::Basic,
+        );
+        let mut bs = BitSet::with_max_value_and_full(100);
+        del_query
+            .weight(EnableScoring::disabled_from_schema(&index.schema()))
+            .unwrap()
+            .for_each_no_score(&reader, &mut |x| {
+                println!("Deleted set of docs {x:?}");
+                for d in x {
+                    bs.remove(*d);
+                }
+            })
+            .unwrap();
+        //bs.serialize(writer)
+        //let ids = reader.doc_ids_alive().collect::<Vec<_>>();
+
+        println!("Updating! to {} segments", para.len());
+        reader.lock().unwrap().update(&vector, &deletions).unwrap();
         println!("Updated!");
 
         last_segments = segment_set;
@@ -99,8 +137,10 @@ fn update_thread(working_path: PathBuf, reader: Arc<Mutex<Reader>>) {
 fn main() -> anyhow::Result<()> {
     let tmp = tempdir()?;
     let working_path = tmp.path().to_owned();
+    let para_working_path = tmp.path().to_owned();
 
     let reader = Arc::new(Mutex::new(Reader::open(&working_path)?));
+    // let preader = Arc::new(Mutex::new(nucliadb_paragraphs3::reader::ParagraphReaderService))
 
     let wp = working_path.clone();
     let r = reader.clone();
