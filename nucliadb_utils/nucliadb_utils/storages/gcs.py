@@ -50,6 +50,7 @@ from nucliadb_utils.storages.exceptions import (
 from nucliadb_utils.storages.storage import (
     ObjectInfo,
     ObjectMetadata,
+    RawStorage,
     Storage,
     StorageField,
 )
@@ -474,87 +475,6 @@ class GCSStorageField(StorageField):
 
 class GCSStorage(Storage):
     field_klass = GCSStorageField
-    session: Optional[aiohttp.ClientSession] = None
-    _credentials = None
-    _json_credentials = None
-    chunk_size = CHUNK_SIZE
-
-    def __init__(
-        self,
-        account_credentials: Optional[str] = None,
-        bucket: Optional[str] = None,
-        location: Optional[str] = None,
-        project: Optional[str] = None,
-        executor: Optional[ThreadPoolExecutor] = None,
-        deadletter_bucket: Optional[str] = None,
-        indexing_bucket: Optional[str] = None,
-        labels: Optional[Dict[str, str]] = None,
-        url: str = "https://www.googleapis.com",
-        scopes: Optional[List[str]] = None,
-    ):
-        if account_credentials is not None:
-            self._json_credentials = json.loads(base64.b64decode(account_credentials))
-            self._credentials = service_account.Credentials.from_service_account_info(
-                self._json_credentials,
-                scopes=DEFAULT_SCOPES if scopes is None else scopes,
-            )
-        self.source = CloudFile.GCS
-        self.deadletter_bucket = deadletter_bucket
-        self.indexing_bucket = indexing_bucket
-        self.bucket = bucket
-        self._location = location
-        self._project = project
-        # https://cloud.google.com/storage/docs/bucket-locations
-        self._bucket_labels = labels or {}
-        self._executor = executor
-        self._creation_access_token = datetime.now()
-        self._upload_url = (
-            url + "/upload/storage/v1/b/{bucket}/o?uploadType=resumable"
-        )  # noqa
-        self.object_base_url = url + "/storage/v1/b"
-        self._client = None
-
-    def _get_access_token(self):
-        if self._credentials.valid is False:
-            req = google.auth.transport.requests.Request()
-            self._credentials.refresh(req)
-            self._creation_access_token = datetime.now()
-        return self._credentials.token
-
-    @storage_ops_observer.wrap({"type": "initialize"})
-    async def initialize(self, service_name: Optional[str] = None):
-        loop = asyncio.get_event_loop()
-
-        await setup_telemetry(service_name or "GCS_SERVICE")
-        self.session = aiohttp.ClientSession(
-            loop=loop, connector=aiohttp.TCPConnector(ttl_dns_cache=60 * 5)
-        )
-
-        try:
-            if self.deadletter_bucket is not None and self.deadletter_bucket != "":
-                await self.create_bucket(self.deadletter_bucket)
-        except Exception:  # pragma: no cover
-            logger.exception(
-                f"Could not create bucket {self.deadletter_bucket}", exc_info=True
-            )
-
-        try:
-            if self.indexing_bucket is not None and self.indexing_bucket != "":
-                await self.create_bucket(self.indexing_bucket)
-        except Exception:  # pragma: no cover
-            logger.exception(
-                f"Could not create bucket {self.indexing_bucket}", exc_info=True
-            )
-
-    async def finalize(self):
-        await self.session.close()
-
-    async def get_access_headers(self):
-        if self._credentials is None:
-            return {}
-        loop = asyncio.get_event_loop()
-        token = await loop.run_in_executor(self._executor, self._get_access_token)
-        return {"AUTHORIZATION": f"Bearer {token}"}
 
     @backoff.on_exception(
         backoff.expo,
@@ -564,30 +484,28 @@ class GCSStorage(Storage):
     )
     @storage_ops_observer.wrap({"type": "delete"})
     async def delete_upload(self, uri: str, bucket_name: str):
-        if self.session is None:
-            raise AttributeError()
-        if uri:
-            url = "{}/{}/o/{}".format(
-                self.object_base_url, bucket_name, quote_plus(uri)
-            )
-            headers = await self.get_access_headers()
-            async with self.session.delete(url, headers=headers) as resp:
-                try:
-                    data = await resp.json()
-                except Exception:
-                    text = await resp.text()
-                    data = {"text": text}
-                if resp.status not in (200, 204, 404):
-                    if resp.status == 404:
-                        logger.error(
-                            f"Attempt to delete not found gcloud: {data}, "
-                            f"status: {resp.status}",
-                            exc_info=True,
-                        )
-                    else:
-                        raise GoogleCloudException(f"{resp.status}: {json.dumps(data)}")
-        else:
+        if not uri:
             raise AttributeError("No valid uri")
+
+        url = "{}/{}/o/{}".format(
+            self.object_base_url, bucket_name, quote_plus(uri)
+        )
+        headers = await self.get_access_headers()
+        async with self.session.delete(url, headers=headers) as resp:
+            try:
+                data = await resp.json()
+            except Exception:
+                text = await resp.text()
+                data = {"text": text}
+            if resp.status not in (200, 204, 404):
+                if resp.status == 404:
+                    logger.error(
+                        f"Attempt to delete not found gcloud: {data}, "
+                        f"status: {resp.status}",
+                        exc_info=True,
+                    )
+                else:
+                    raise GoogleCloudException(f"{resp.status}: {json.dumps(data)}")
 
     @storage_ops_observer.wrap({"type": "check_bucket_exists"})
     async def check_exists(self, bucket_name: str):
@@ -605,57 +523,6 @@ class GCSStorage(Storage):
                 return True
         return False
 
-    async def create_bucket(self, bucket_name: str, kbid: Optional[str] = None):
-        if self.session is None:
-            raise AttributeError()
-        exists = await self.check_exists(bucket_name=bucket_name)
-        if exists:
-            return
-
-        headers = await self.get_access_headers()
-
-        url = f"{self.object_base_url}?project={self._project}"
-        labels = deepcopy(self._bucket_labels)
-        if kbid is not None:
-            labels["kbid"] = kbid.lower()
-        await self._create_bucket(url, headers, bucket_name, labels)
-
-    @storage_ops_observer.wrap({"type": "create_bucket"})
-    async def _create_bucket(self, url, headers, bucket_name, labels):
-        async with self.session.post(
-            url,
-            headers=headers,
-            json={
-                "name": bucket_name,
-                "location": self._location,
-                "labels": labels,
-                "iamConfiguration": {
-                    "publicAccessPrevention": "enforced",
-                    "uniformBucketLevelAccess": {
-                        "enabled": True,
-                    },
-                },
-            },
-        ) as resp:
-            if resp.status != 200:  # pragma: no cover
-                logger.info(f"Creation of bucket error: {resp.status}")
-                text = await resp.text()
-                logger.info(f"Bucket : {bucket_name}")
-                logger.info(f"Location : {self._location}")
-                logger.info(f"Labels : {labels}")
-                logger.info(f"URL : {url}")
-                logger.info(text)
-
-                raise CouldNotCreateBucket(text)
-
-    def get_bucket_name(self, kbid: str):
-        if self.bucket is None:
-            raise AttributeError()
-        bucket_name = self.bucket.format(
-            kbid=kbid,
-        )
-        return bucket_name
-
     async def create_kb(self, kbid: str) -> bool:
         bucket_name = self.get_bucket_name(kbid)
         created = False
@@ -665,64 +532,6 @@ class GCSStorage(Storage):
         except Exception as e:
             logger.exception(f"Could not create bucket {kbid}", exc_info=e)
         return created
-
-    @storage_ops_observer.wrap({"type": "schedule_delete"})
-    async def schedule_delete_kb(self, kbid: str):
-        if self.session is None:
-            raise AttributeError()
-        bucket_name = self.get_bucket_name(kbid)
-        headers = await self.get_access_headers()
-        url = f"{self.object_base_url}/{bucket_name}?fields=lifecycle"
-        deleted = False
-        async with self.session.patch(url, headers=headers, json=POLICY_DELETE) as resp:
-            try:
-                data = await resp.json()
-            except Exception:
-                text = await resp.text()
-                data = {"text": text}
-            if resp.status not in (200, 204, 404):
-                if resp.status == 405:
-                    # For testing purposes, gcs fixture doesn't have patch
-                    logger.error("Not implemented")
-                elif resp.status == 404:
-                    logger.error(
-                        f"Attempt to delete not found gcloud: {data}, "
-                        f"status: {resp.status}",
-                        exc_info=True,
-                    )
-                else:
-                    raise GoogleCloudException(f"{resp.status}: {json.dumps(data)}")
-            deleted = True
-        return deleted
-
-    @storage_ops_observer.wrap({"type": "delete"})
-    async def delete_kb(self, kbid: str):
-        if self.session is None:
-            raise AttributeError()
-        bucket_name = self.get_bucket_name(kbid)
-        headers = await self.get_access_headers()
-        url = f"{self.object_base_url}/{bucket_name}"
-        deleted = False
-        conflict = False
-        async with self.session.delete(url, headers=headers) as resp:
-            if resp.status == 204:
-                logger.info(f"Deleted bucket: {bucket_name}")
-                deleted = True
-            elif resp.status == 409:
-                details = await resp.text()
-                logger.info(f"Conflict on deleting bucket {bucket_name}: {details}")
-                conflict = True
-            elif resp.status == 404:
-                logger.info(f"Does not exit on deleting: {bucket_name}")
-            else:
-                details = await resp.text()
-                msg = f"Delete KB bucket returned an unexpected status {resp.status}: {details}"
-                logger.error(msg, extra={"kbid": kbid})
-                with errors.push_scope() as scope:
-                    scope.set_extra("kbid", kbid)
-                    scope.set_extra("status_code", resp.status)
-                    errors.capture_message(msg, "error", scope)
-        return deleted, conflict
 
     async def iterate_objects(
         self, bucket: str, prefix: str
@@ -757,3 +566,145 @@ class GCSStorage(Storage):
                 for item in items:
                     yield ObjectInfo(name=item["name"])
                 page_token = data.get("nextPageToken")
+
+
+
+class RawGCSStorage(RawStorage):
+    def __init__(
+        self,
+        bucket_name_template: str,
+        location: str,
+        project: str,
+        account_credentials: Optional[str] = None,
+        executor: Optional[ThreadPoolExecutor] = None,
+        bucket_labels: Optional[dict[str, str]] = None,
+        base_url: str = "https://www.googleapis.com",
+        scopes: Optional[List[str]] = None,
+    ):
+        self.source = CloudFile.GCS
+        self._json_credentials = None
+        self._credentials = None
+        if account_credentials is not None:
+            self._json_credentials = json.loads(base64.b64decode(account_credentials))
+            self._credentials = service_account.Credentials.from_service_account_info(
+                self._json_credentials,
+                scopes=DEFAULT_SCOPES if scopes is None else scopes,
+            )
+        self.source = CloudFile.GCS
+        self.bucket_name_template = bucket_name_template
+        self._location = location
+        self._project = project
+        # https://cloud.google.com/storage/docs/bucket-locations
+        self._bucket_labels = bucket_labels or {}
+        self._executor = executor
+        self._creation_access_token = datetime.now()
+        self._upload_url = (
+            base_url + "/upload/storage/v1/b/{bucket}/o?uploadType=resumable"
+        )
+        self.object_base_url = base_url + "/storage/v1/b"
+
+    @storage_ops_observer.wrap({"type": "initialize"})
+    async def initialize(self) -> None:
+        loop = asyncio.get_event_loop()
+        self.session = aiohttp.ClientSession(
+            loop=loop, connector=aiohttp.TCPConnector(ttl_dns_cache=60 * 5)
+        )
+
+    async def finalize(self) -> None:
+        await self.session.close()
+
+    def get_bucket_name(self, **kwargs) -> str:
+        return self.bucket_name_template.format(**kwargs)
+
+    def _get_access_token(self):
+        if self._credentials.valid is False:
+            req = google.auth.transport.requests.Request()
+            self._credentials.refresh(req)
+            self._creation_access_token = datetime.now()
+        return self._credentials.token
+
+    async def get_access_headers(self) -> dict[str, str]:
+        if self._credentials is None:
+            return {}
+        loop = asyncio.get_event_loop()
+        token = await loop.run_in_executor(self._executor, self._get_access_token)
+        return {"AUTHORIZATION": f"Bearer {token}"}
+
+    @storage_ops_observer.wrap({"type": "create_bucket"})
+    async def create_bucket(self, bucket_name: str, labels: Optional[dict[str, str]] = None) -> None:
+        url = f"{self.object_base_url}?project={self._project}"
+        headers = await self.get_access_headers()
+        bucket_labels = deepcopy(self._bucket_labels)
+        bucket_labels.update(labels or {})
+        async with self.session.post(
+            url,
+            headers=headers,
+            json={
+                "name": bucket_name,
+                "location": self._location,
+                "labels": bucket_labels,
+                "iamConfiguration": {
+                    "publicAccessPrevention": "enforced",
+                    "uniformBucketLevelAccess": {
+                        "enabled": True,
+                    },
+                },
+            },
+        ) as resp:
+            if resp.status != 200:  # pragma: no cover
+                text = await resp.text()
+                logger.error(
+                    f"Creation of bucket error: {resp.status}",
+                    extra={
+                        "bucket": bucket_name,
+                        "location": self._location,
+                        "labels": bucket_labels,
+                        "url": url,
+                        "text": text,
+                    }
+                )
+                raise CouldNotCreateBucket(text)
+            
+    @storage_ops_observer.wrap({"type": "schedule_delete_bucket"})
+    async def schedule_delete_bucket(self, bucket: str) -> None:
+        headers = await self.get_access_headers()
+        url = f"{self.object_base_url}/{bucket}?fields=lifecycle"
+        async with self.session.patch(url, headers=headers, json=POLICY_DELETE) as resp:
+            if resp.status in (200, 204, 404):
+                return
+            if resp.status == 405:
+                # For testing purposes, gcs fixture doesn't have patch
+                logger.error("Not implemented")
+                return
+            try:
+                data = await resp.json()
+            except Exception:
+                text = await resp.text()
+                data = {"text": text}
+            raise GoogleCloudException(f"{resp.status}: {json.dumps(data)}")
+
+    @storage_ops_observer.wrap({"type": "delete_bucket"})
+    async def delete_bucket(self, bucket: str) -> tuple[bool, bool]:
+        headers = await self.get_access_headers()
+        url = f"{self.object_base_url}/{bucket}"
+        deleted = False
+        conflict = False
+        async with self.session.delete(url, headers=headers) as resp:
+            if resp.status == 204:
+                logger.info(f"Deleted bucket: {bucket}")
+                deleted = True
+            elif resp.status == 409:
+                details = await resp.text()
+                logger.info(f"Conflict on deleting bucket {bucket}: {details}")
+                conflict = True
+            elif resp.status == 404:
+                logger.info(f"Does not exit on deleting: {bucket}")
+            else:
+                details = await resp.text()
+                msg = f"Delete KB bucket returned an unexpected status {resp.status}: {details}"
+                logger.error(msg, extra={"bucket": bucket})
+                with errors.push_scope() as scope:
+                    scope.set_extra("bucket", bucket)
+                    scope.set_extra("status_code", resp.status)
+                    errors.capture_message(msg, "error", scope)
+        return deleted, conflict

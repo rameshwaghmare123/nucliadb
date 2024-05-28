@@ -43,9 +43,10 @@ from nucliadb_protos.nodewriter_pb2 import IndexMessage
 from nucliadb_protos.resources_pb2 import CloudFile
 from nucliadb_protos.writer_pb2 import BrokerMessage
 
+from nucliadb_telemetry.utils import setup_telemetry
 from nucliadb_utils import logger
 from nucliadb_utils.helpers import async_gen_lookahead
-from nucliadb_utils.storages import CHUNK_SIZE
+from nucliadb_utils.storages import CHUNK_SIZE, DEFAULT_CHUNK_SIZE
 from nucliadb_utils.storages.exceptions import IndexDataNotFound, InvalidCloudFile
 from nucliadb_utils.utilities import get_local_storage, get_nuclia_storage
 
@@ -152,13 +153,26 @@ class StorageField(abc.ABC, metaclass=abc.ABCMeta):
     async def finish(self): ...
 
 
-class Storage(abc.ABC, metaclass=abc.ABCMeta):
-    source: int
+class Storage:
     field_klass: Type
-    deadletter_bucket: Optional[str] = None
-    indexing_bucket: Optional[str] = None
-    cached_buckets: List[str] = []
-    chunk_size = CHUNK_SIZE
+
+    def __init__(
+        self,
+        raw_driver: RawStorage,
+        deadletter_bucket: str,
+        indexing_bucket: str,
+    ):
+        self.raw_driver = raw_driver
+        self.deadletter_bucket = deadletter_bucket
+        self.indexing_bucket = indexing_bucket
+
+    @property
+    def source(self) -> int:
+        return self.raw_driver.source
+
+    @property
+    def chunk_size(self) -> int:
+        return self.raw_driver.chunk_size
 
     async def delete_resource(self, kbid: str, uuid: str):
         # Delete all keys inside a resource
@@ -527,11 +541,15 @@ class Storage(abc.ABC, metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def get_bucket_name(self, kbid: str) -> str: ...
 
-    @abc.abstractmethod
-    async def initialize(self) -> None: ...
+    async def initialize(self, service_name: str) -> None:
+        await setup_telemetry(service_name)
+        await self.raw_driver.initialize()
+        for bucket in [self.deadletter_bucket, self.indexing_bucket]:
+            if not await self.raw_driver.bucket_exists(bucket):
+                await self.raw_driver.create_bucket(bucket)
 
-    @abc.abstractmethod
-    async def finalize(self) -> None: ...
+    async def finalize(self) -> None:
+        await self.raw_driver.finalize()
 
     @abc.abstractmethod
     def iterate_objects(
@@ -550,14 +568,27 @@ class Storage(abc.ABC, metaclass=abc.ABCMeta):
             file.uri, destination.key, file.bucket_name, destination.bucket
         )
 
-    @abc.abstractmethod
-    async def create_kb(self, kbid: str) -> bool: ...
+    async def create_kb(self, kbid: str) -> bool:
+        bucket_name = self.raw_driver.get_bucket_name(kbid=kbid)
+        if await self.raw_driver.bucket_exists(bucket_name):
+            return False
+        try:
+            await self.raw_driver.create_bucket(bucket_name, labels={"kbid": kbid})
+            return True
+        except Exception as e:
+            logger.exception(f"Could not create bucket {kbid}", exc_info=e)
+            return False
 
-    @abc.abstractmethod
-    async def delete_kb(self, kbid: str) -> Tuple[bool, bool]: ...
+    async def delete_kb(self, kbid: str) -> tuple[bool, bool]:
+        bucket = self.raw_driver.get_bucket_name(kbid=kbid)
+        return await self.raw_driver.delete_bucket(bucket)
 
-    @abc.abstractmethod
-    async def schedule_delete_kb(self, kbid: str) -> bool: ...
+    async def schedule_delete_kb(self, kbid: str) -> bool:
+        bucket = self.get_bucket_name(kbid)
+        if not await self.raw_driver.bucket_exists(bucket):
+            return False
+        await self.raw_driver.schedule_delete_bucket(bucket)
+        return True
 
     async def set_stream_message(self, kbid: str, rid: str, data: bytes) -> str:
         key = MESSAGE_KEY.format(kbid=kbid, rid=rid, mid=uuid.uuid4())
@@ -572,6 +603,71 @@ class Storage(abc.ABC, metaclass=abc.ABCMeta):
 
     async def del_stream_message(self, key: str) -> None:
         await self.delete_upload(key, cast(str, self.indexing_bucket))
+
+
+class RawStorage(abc.ABC, metaclass=abc.ABCMeta):
+    source: int
+    chunk_size = DEFAULT_CHUNK_SIZE
+
+    @abc.abstractmethod
+    async def initialize(self) -> None: ...
+
+    @abc.abstractmethod
+    async def finalize(self) -> None: ...
+
+    @abc.abstractmethod
+    def get_bucket_name(self, **kwargs) -> str: ...
+
+    @abc.abstractmethod
+    async def create_bucket(self, bucket: str, labels: Optional[dict[str, str]] = None) -> None: ...
+
+    @abc.abstractmethod
+    async def bucket_exists(self, bucket: str) -> bool: ...
+
+    @abc.abstractmethod
+    async def delete_bucket(self, bucket: str) -> None: ...
+
+    @abc.abstractmethod
+    async def schedule_delete_bucket(self, bucket: str) -> None: ...
+
+    @abc.abstractmethod
+    async def move_object(self, origin_bucket: str, origin_key: str, destination_bucket: str, destination_key: str) -> None: ...
+
+    @abc.abstractmethod
+    async def copy_object(self, origin_bucket: str, origin_key: str, destination_bucket: str, destination_key: str) -> None: ...
+
+    @abc.abstractmethod
+    async def delete_object(self, bucket: str, key: str) -> None: ...
+
+    @abc.abstractmethod
+    async def upload_object(self, bucket: str, key: str, data: Union[bytes, AsyncGenerator[bytes, None]]) -> None: ...
+
+    @abc.abstractmethod
+    async def download_object(self, bucket: str, key: str) -> bytes: ...
+
+    @abc.abstractmethod
+    async def download_object_stream(self, bucket: str, key: str) -> AsyncGenerator[bytes, None]:
+        raise NotImplementedError()
+        yield b""
+
+    @abc.abstractmethod
+    async def iter_objects(self, bucket: str, prefix: str) -> AsyncGenerator[ObjectInfo, None]:
+        raise NotImplementedError()
+        yield ObjectInfo(name="")
+    
+    @abc.abstractmethod
+    async def get_object_metadata(self, bucket: str, key: str) -> ObjectMetadata: ...
+
+    @abc.abstractmethod
+    async def multipart_upload_start(self, bucket: str, key: str, metadata: ObjectMetadata) -> str: ...
+
+    @abc.abstractmethod
+    async def multipart_upload_append(self, bucket: str, key: str, iterable: AsyncIterator[bytes]): ...
+
+    @abc.abstractmethod
+    async def multipart_upload_finish(self, bucket: str, key: str) -> None: ...
+
+
 
 
 async def iter_and_add_size(

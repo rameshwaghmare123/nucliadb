@@ -102,51 +102,41 @@ async def get_storage(
     if storage_settings.file_backend == FileBackendConfig.S3:
         from nucliadb_utils.storages.s3 import S3Storage
 
-        s3util = S3Storage(
+        raw_driver = S3Storage(
             aws_client_id=storage_settings.s3_client_id,
             aws_client_secret=storage_settings.s3_client_secret,
             endpoint_url=storage_settings.s3_endpoint,
             verify_ssl=storage_settings.s3_verify_ssl,
-            deadletter_bucket=extended_storage_settings.s3_deadletter_bucket,
-            indexing_bucket=extended_storage_settings.s3_indexing_bucket,
             use_ssl=storage_settings.s3_ssl,
             region_name=storage_settings.s3_region_name,
             max_pool_connections=storage_settings.s3_max_pool_connections,
             bucket=storage_settings.s3_bucket,
             bucket_tags=storage_settings.s3_bucket_tags,
         )
-        set_utility(Utility.STORAGE, s3util)
-        await s3util.initialize()
         logger.info("Configuring S3 Storage")
 
     elif storage_settings.file_backend == FileBackendConfig.GCS:
         from nucliadb_utils.storages.gcs import GCSStorage
 
-        gcsutil = GCSStorage(
+        raw_driver = GCSStorage(
             url=storage_settings.gcs_endpoint_url,
             account_credentials=storage_settings.gcs_base64_creds,
             bucket=storage_settings.gcs_bucket,
             location=storage_settings.gcs_location,
             project=storage_settings.gcs_project,
-            deadletter_bucket=extended_storage_settings.gcs_deadletter_bucket,
-            indexing_bucket=extended_storage_settings.gcs_indexing_bucket,
             executor=ThreadPoolExecutor(extended_storage_settings.gcs_threads),
             labels=storage_settings.gcs_bucket_labels,
             scopes=gcs_scopes,
         )
-        set_utility(Utility.STORAGE, gcsutil)
-        await gcsutil.initialize(service_name)
         logger.info("Configuring GCS Storage")
 
     elif storage_settings.file_backend == FileBackendConfig.PG:
         from nucliadb_utils.storages.pg import PostgresStorage
 
-        pgutil = PostgresStorage(
-            storage_settings.driver_pg_url,  # type: ignore
+        raw_driver = PostgresStorage(
+            dsn=storage_settings.driver_pg_url,  # type: ignore
             connection_pool_max_size=storage_settings.driver_pg_connection_pool_max_size,
         )
-        set_utility(Utility.STORAGE, pgutil)
-        await pgutil.initialize()
         logger.info("Configuring Postgres Storage")
 
     elif storage_settings.file_backend == FileBackendConfig.LOCAL:
@@ -154,16 +144,22 @@ async def get_storage(
             raise ConfigurationError("LOCAL_FILES env var not configured")
         from nucliadb_utils.storages.local import LocalStorage
 
-        localutil = LocalStorage(
+        raw_driver = LocalStorage(
             local_testing_files=storage_settings.local_files,
         )
-        set_utility(Utility.STORAGE, localutil)
-        await localutil.initialize()
         logger.info("Configuring Local Storage")
     else:
         raise ConfigurationError(
             "Invalid storage settings, please configure FILE_BACKEND"
         )
+
+    storage = Storage(
+        raw_driver=raw_driver,
+        deadletter_bucket=extended_storage_settings.gcs_deadletter_bucket,
+        indexing_bucket=extended_storage_settings.gcs_indexing_bucket,
+    )
+    await storage.initialize()
+    set_utility(Utility.STORAGE, storage)
 
     return MAIN[Utility.STORAGE]
 
