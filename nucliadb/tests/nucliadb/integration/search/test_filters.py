@@ -183,7 +183,6 @@ def broker_message_with_labels(kbid):
         Classification(
             labelset=labelset,
             label=label,
-            cancelled_by_user=False,
         )
     )
     ufm.paragraphs.append(panno1)
@@ -195,7 +194,6 @@ def broker_message_with_labels(kbid):
         Classification(
             labelset=labelset,
             label=label,
-            cancelled_by_user=False,
         )
     )
 

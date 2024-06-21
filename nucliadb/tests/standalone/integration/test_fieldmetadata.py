@@ -50,7 +50,6 @@ async def test_fieldmetadata_crud(
                     {
                         "labelset": "My Labels",
                         "label": "Label 0",
-                        "cancelled_by_user": False,
                     },
                 ],
             },
@@ -76,7 +75,6 @@ async def test_fieldmetadata_crud(
                     {
                         "labelset": "My Labels",
                         "label": "Label 2",
-                        "cancelled_by_user": False,
                     }
                 ],
             }
@@ -91,7 +89,6 @@ async def test_fieldmetadata_crud(
                     {
                         "labelset": "My Labels",
                         "label": "Label 1",
-                        "cancelled_by_user": True,
                     }
                 ],
             }
