@@ -59,9 +59,12 @@ def validate_slug(value, handler, info):
             raise e
 
 
+SlugPattern = r"^[a-zA-Z0-9:_-]+$"
+
+
 SlugString = Annotated[
     str,
-    pydantic.StringConstraints(pattern=r"^[a-zA-Z0-9:_-]+$"),
+    pydantic.StringConstraints(pattern=SlugPattern),
     pydantic.WrapValidator(validate_slug),
 ]
 

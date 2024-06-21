@@ -51,6 +51,7 @@ from nucliadb_models.security import ResourceSecurity
 from nucliadb_models.text import FieldText
 from nucliadb_models.utils import SlugString
 from nucliadb_models.vectors import SemanticModelMetadata, VectorSimilarity
+from nucliadb_models.writer import FieldDefaults
 from nucliadb_protos.knowledgebox_pb2 import KnowledgeBoxConfig as PBKnowledgeBoxConfig
 from nucliadb_protos.utils_pb2 import ReleaseChannel as PBReleaseChannel
 
@@ -259,34 +260,34 @@ class QueueType(str, Enum):
 
 class Resource(BaseModel):
     id: str
+    slug: Optional[str] = FieldDefaults.slug
+    title: Optional[str] = FieldDefaults.title
+    summary: Optional[str] = FieldDefaults.summary
+    icon: Optional[str] = FieldDefaults.icon
+    thumbnail: Optional[str] = FieldDefaults.thumbnail
+    created: Optional[datetime] = FieldDefaults.created
+    modified: Optional[datetime] = FieldDefaults.modified
 
-    # This first block of attributes correspond to Basic fields
-    slug: Optional[str] = None
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    icon: Optional[str] = None
-    thumbnail: Optional[str] = None
     metadata: Optional[Metadata] = None
     usermetadata: Optional[UserMetadata] = None
     fieldmetadata: Optional[List[UserFieldMetadata]] = None
     computedmetadata: Optional[ComputedMetadata] = None
-    created: Optional[datetime] = None
-    modified: Optional[datetime] = None
-    last_seqid: Optional[int] = None
-    last_account_seq: Optional[int] = None
-    queue: Optional[QueueType] = None
-
-    origin: Optional[Origin] = None
-    extra: Optional[Extra] = None
+    origin: Optional[Origin] = Field(
+        default=None, title="Origin", description="Origin metadata for the resource."
+    )
+    extra: Optional[Extra] = Field(
+        default=None, title="Extra", description="Extra metadata for the resource."
+    )
     relations: Optional[List[Relation]] = None
-
     data: Optional[ResourceData] = None
-
     security: Optional[ResourceSecurity] = Field(
         default=None,
         title="Security",
         description="Resource security metadata",
     )
+    last_seqid: Optional[int] = None
+    last_account_seq: Optional[int] = None
+    queue: Optional[QueueType] = None
 
 
 class ResourcePagination(BaseModel):

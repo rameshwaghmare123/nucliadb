@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, model_validator
 from typing_extensions import Self
 
 from nucliadb_models.common import FIELD_TYPES_MAP
+from nucliadb_models.writer import FieldDefaults
 from nucliadb_protos import resources_pb2, utils_pb2
 
 from .common import Classification, FieldID, QuestionAnswer, UserClassification
@@ -156,9 +157,24 @@ class Relation(BaseModel):
 
 
 class InputMetadata(BaseModel):
-    metadata: Dict[str, str] = {}
-    language: Optional[str] = None
-    languages: Optional[List[str]] = None
+    metadata: Dict[str, str] = Field(
+        default={},
+        title="Resource metadata",
+        description="Arbitrary metadata provided by the user. This metadata is not meant to be searchable, but can be serialized on results.",
+        deprecated=True,
+    )
+    language: Optional[str] = Field(
+        default=None,
+        title="Resource language",
+        description="Main language of the resource. Follows the ISO 639-1 standard (two-letter codes).",
+        examples=["en", "es"],
+    )
+    languages: Optional[List[str]] = Field(
+        default=None,
+        title="Resource languages",
+        description="List of secondary languages of the resource. Follows the ISO 639-1 standard (two-letter codes).",
+        examples=[["ca", "it"]],
+    )
 
 
 class ResourceProcessingStatus(Enum):
@@ -171,7 +187,12 @@ class ResourceProcessingStatus(Enum):
 
 
 class Metadata(InputMetadata):
-    status: ResourceProcessingStatus
+    status: ResourceProcessingStatus = Field(
+        ...,
+        title="Resource processing status",
+        description=f"Processing status of the resource. Can be one of {', '.join([s.value for s in ResourceProcessingStatus])}. Only resources with status {ResourceProcessingStatus.PROCESSED.value} are searchable.",
+        examples=[ResourceProcessingStatus.PENDING.value, ResourceProcessingStatus.PROCESSED.value],
+    )
 
     @classmethod
     def from_message(cls: Type[_T], message: resources_pb2.Metadata) -> _T:
@@ -236,8 +257,12 @@ class ComputedMetadata(BaseModel):
 
 
 class UserMetadata(BaseModel):
-    classifications: List[UserClassification] = []
-    relations: List[Relation] = []
+    classifications: List[UserClassification] = Field(
+        default=[],
+        title="User classifications",
+        description="Classifications for the resource. Use to label the resource with user-defined labels that will apply to all fields of the resource. Those labels can then be used for filtering at search time.",
+    )
+    relations: List[Relation] = Field(default=[], deprecated=True)
 
     @classmethod
     def from_message(cls: Type[_T], message: resources_pb2.UserMetadata) -> _T:
@@ -287,10 +312,10 @@ class UserFieldMetadata(BaseModel):
     Field-level metadata set by the user via the rest api
     """
 
-    token: List[TokenSplit] = []
+    token: List[TokenSplit] = Field(default=[], deprecated=True)
     paragraphs: List[ParagraphAnnotation] = []
-    selections: List[PageSelections] = []
-    question_answers: List[QuestionAnswerAnnotation] = []
+    selections: List[PageSelections] = Field(default=[], deprecated=True)
+    question_answers: List[QuestionAnswerAnnotation] = Field(default=[], deprecated=True)
     field: FieldID
 
     @classmethod
@@ -316,13 +341,25 @@ class UserFieldMetadata(BaseModel):
 
 
 class Basic(BaseModel):
-    icon: Optional[str] = None
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    thumbnail: Optional[str] = None
-    created: Optional[datetime] = None
-    modified: Optional[datetime] = None
-    metadata: Optional[Metadata] = None
+    icon: Optional[str] = FieldDefaults.icon
+    title: Optional[str] = FieldDefaults.title
+    summary: Optional[str] = FieldDefaults.summary
+    thumbnail: Optional[str] = FieldDefaults.thumbnail
+    created: Optional[datetime] = Field(
+        default=None,
+        title="Resource creation date",
+        description="Date when the resource was created in isoformat",
+        examples=["2024-06-21T08:45:49.730576"],
+    )
+    modified: Optional[datetime] = Field(
+        default=None,
+        title="Resource modification date",
+        description="Date when the resource was last modified in isoformat",
+        examples=["2024-06-21T08:45:49.730576"],
+    )
+    metadata: Optional[Metadata] = Field(
+        default=None, title="Resource metadata", description="Resource metadata"
+    )
     usermetadata: Optional[UserMetadata] = None
     fieldmetadata: Optional[List[UserFieldMetadata]] = None
     computedmetadata: Optional[ComputedMetadata] = None
