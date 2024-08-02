@@ -993,7 +993,7 @@ async def test_carmen(
 
     import pickle
 
-    with open("/users/ferran/Desktop/BM", "rb") as f:
+    with open("/users/ferran/Desktop/PB_2", "rb") as f:
         bm: BrokerMessage = pickle.load(f)
     bm.kbid = kbid
     bm.uuid = rid
@@ -1006,5 +1006,5 @@ async def test_carmen(
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["icon"] == "application/pdf"
+    assert data["icon"] == "video/mp4"
                  
