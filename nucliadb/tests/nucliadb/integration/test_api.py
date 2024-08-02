@@ -962,3 +962,49 @@ async def test_pagination_limits(
         },
     )
     assert resp.status_code != 412
+
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("knowledgebox", ("EXPERIMENTAL", "STABLE"), indirect=True)
+async def test_carmen(
+    nucliadb_reader: AsyncClient,
+    nucliadb_writer: AsyncClient,
+    nucliadb_grpc: WriterStub,
+    nucliadb_train: TrainStub,
+    knowledgebox,
+):
+    kbid = knowledgebox
+    # PUBLIC API
+    resp = await nucliadb_reader.get(f"/kb/{kbid}")
+    assert resp.status_code == 200
+
+    resp = await nucliadb_writer.post(
+        f"/kb/{kbid}/resources",
+        json={
+            "title": "My title",
+            "slug": "myresource",
+            "field": {"file": {"uri": "https://www.example.com"}},
+        }
+    )
+    assert resp.status_code == 201
+    rid = resp.json()["uuid"]
+
+    import pickle
+
+    with open("/users/ferran/Desktop/BM", "rb") as f:
+        bm: BrokerMessage = pickle.load(f)
+    bm.kbid = kbid
+    bm.uuid = rid
+
+    resp = await nucliadb_grpc.ProcessMessage([bm], timeout=None)  # type: ignore
+    assert resp.status == OpStatusWriter.Status.OK
+
+    resp = await nucliadb_reader.get(
+        f"/kb/{kbid}/resource/{rid}?show=basic",
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["icon"] == "application/pdf"
+                 
