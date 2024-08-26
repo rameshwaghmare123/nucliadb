@@ -19,7 +19,7 @@
 #
 import functools
 import json
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, cast
 
 from nucliadb.common.datamanagers.exceptions import KnowledgeBoxNotFound
 from nucliadb.models.responses import HTTPClientError
@@ -68,8 +68,11 @@ from nucliadb_models.search import (
     MetadataAskResponseItem,
     MinScore,
     NucliaDBClientType,
+    PreQueriesStrategy,
+    PreQuery,
     PromptContext,
     PromptContextOrder,
+    RagStrategyName,
     Relations,
     RelationsAskResponseItem,
     RetrievalAskResponseItem,
@@ -390,10 +393,13 @@ async def ask(
         except RephraseMissingContextError:
             logger.info("Failed to rephrase ask query, using original")
 
+    prequeries = parse_prequeries(ask_request)
     # Retrieval is not needed if we are chatting on a specific
     # resource and the full_resource strategy is enabled
     needs_retrieval = True
     if resource is not None:
+        if prequeries is not None:
+            raise InvalidQueryError("Prequeries strategy is not allowed when chatting on a specific resource")
         ask_request.resource_filters = [resource]
         if any(strategy.name == "full_resource" for strategy in ask_request.rag_strategies):
             needs_retrieval = False
@@ -410,6 +416,7 @@ async def ask(
                 user=user_id,
                 origin=origin,
                 metrics=metrics,
+                prequeries=prequeries,
             )
         if len(find_results.resources) == 0:
             return NotEnoughContextAskResult(find_results=find_results)
@@ -529,3 +536,10 @@ def handled_ask_exceptions(func):
             return HTTPClientError(status_code=412, detail=str(exc))
 
     return wrapper
+
+
+def parse_prequeries(ask_request: AskRequest) -> Optional[list[PreQuery]]:
+    for rag_strategy in ask_request.rag_strategies:
+        if rag_strategy.name == RagStrategyName.PREQUERIES:
+            rag_strategy = cast(PreQueriesStrategy, rag_strategy)
+            return rag_strategy.queries

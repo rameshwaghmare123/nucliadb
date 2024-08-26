@@ -41,6 +41,7 @@ from nucliadb_models.search import (
     KnowledgeboxFindResults,
     MinScore,
     NucliaDBClientType,
+    PreQuery,
     PromptContext,
     PromptContextOrder,
     Relations,
@@ -139,7 +140,9 @@ async def get_find_results(
     user: str,
     origin: str,
     metrics: RAGMetrics = RAGMetrics(),
+    prequeries: Optional[list[PreQuery]] = None,
 ) -> tuple[KnowledgeboxFindResults, QueryParser]:
+    prequeries = prequeries or []
     find_request = FindRequest()
     find_request.resource_filters = chat_request.resource_filters
     find_request.features = []
@@ -168,6 +171,7 @@ async def get_find_results(
     find_request.debug = chat_request.debug
     find_request.rephrase = chat_request.rephrase
 
+    # Main query
     find_results, incomplete, query_parser = await find(
         kbid,
         find_request,
@@ -179,6 +183,11 @@ async def get_find_results(
     )
     if incomplete:
         raise IncompleteFindResultsError()
+
+    if len(prequeries) > 0:
+        prequeries_results = await run_prequeries(prequeries)
+        find_results = merge_prequeries_results(find_results, prequeries_results)
+
     return find_results, query_parser
 
 
@@ -534,3 +543,65 @@ def sorted_prompt_context_list(context: PromptContext, order: PromptContextOrder
         key=lambda item: order.get(item[0], float("inf")),
     )
     return list(map(lambda item: item[1], sorted_items))
+
+
+
+async def run_prequeries(
+    kbid: str,
+    prequeries: list[PreQuery],
+    x_ndb_client: NucliaDBClientType,
+    x_nucliadb_user: str,
+    x_forwarded_for: str,
+    generative_model: str | None = None,
+    metrics: RAGMetrics = RAGMetrics()
+) -> list[KnowledgeboxFindResults]:
+    """
+    Runs simultaneous find requests for each prequery and returns the merged results according to the normalized weights.
+    """
+    semaphore = asyncio.Semaphore(2)
+
+    async def _prequery_find(
+        index: int,
+        item: FindRequest,
+    ):
+        async with semaphore:
+            find_results, _, _ = await find(
+                kbid,
+                item,
+                x_ndb_client,
+                x_nucliadb_user,
+                x_forwarded_for,
+                generative_model=generative_model,
+                metrics=metrics,
+            )
+            return index, find_results
+
+    total_weigths = sum(prequery.weight for prequery in prequeries)
+    normalized = {
+        i: {
+            "query": prequery.query,
+            "weight": prequery.weight / total_weigths,
+        }
+        for i, prequery in enumerate(prequeries)
+    }
+    ops = []
+    for prequery_index, data in normalized.items():
+        request = data["query"]
+        ops.append(
+            asyncio.create_task(
+                _prequery_find(
+                    prequery_index,
+                    kbid,
+                    request,
+                    x_ndb_client,
+                    x_nucliadb_user,
+                    x_forwarded_for,
+                    generative_model=generative_model,
+                    metrics=metrics,
+                )
+            )
+        )
+    results = await asyncio.gather(*ops)
+
+    # TODO: merge results according to the normalized weights
+    pass

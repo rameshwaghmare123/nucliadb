@@ -74,6 +74,21 @@ ANSWER_JSON_SCHEMA_EXAMPLE = {
 }
 
 
+RagStrategies = Annotated[
+    Union[
+        "FieldExtensionStrategy",
+        "FullResourceStrategy",
+        "HierarchyResourceStrategy",
+        "NeighbouringParagraphsStrategy",
+        "PreQueriesStrategy",
+    ],
+    Field(discriminator="name"),
+]
+RagImagesStrategies = Annotated[
+    Union["PageImageStrategy", "ParagraphImageStrategy"], Field(discriminator="name")
+]
+
+
 class ModelParamDefaults:
     applied_autofilters = ParamDefault(
         default=[],
@@ -889,6 +904,7 @@ class RagStrategyName:
     FULL_RESOURCE = "full_resource"
     HIERARCHY = "hierarchy"
     NEIGHBOURING_PARAGRAPHS = "neighbouring_paragraphs"
+    PREQUERIES = "prequeries"
 
 
 class ImageRagStrategyName:
@@ -912,99 +928,6 @@ ALLOWED_FIELD_TYPES: dict[str, str] = {
     "a": "generic",
 }
 
-
-class FieldExtensionStrategy(RagStrategy):
-    name: Literal["field_extension"]
-    fields: Set[str] = Field(
-        title="Fields",
-        description="List of field ids to extend the context with. It will try to extend the retrieval context with the specified fields in the matching resources. The field ids have to be in the format `{field_type}/{field_name}`, like 'a/title', 'a/summary' for title and summary fields or 't/amend' for a text field named 'amend'.",  # noqa
-        min_length=1,
-    )
-
-    @field_validator("fields", mode="after")
-    @classmethod
-    def fields_validator(cls, fields) -> Self:
-        # Check that the fields are in the format {field_type}/{field_name}
-        for field in fields:
-            try:
-                field_type, _ = field.strip("/").split("/")
-            except ValueError:
-                raise ValueError(f"Field '{field}' is not in the format {{field_type}}/{{field_name}}")
-            if field_type not in ALLOWED_FIELD_TYPES:
-                allowed_field_types_part = ", ".join(
-                    [f"'{fid}' for '{fname}' fields" for fid, fname in ALLOWED_FIELD_TYPES.items()]
-                )
-                raise ValueError(
-                    f"Field '{field}' does not have a valid field type. "
-                    f"Valid field types are: {allowed_field_types_part}."
-                )
-
-        return fields
-
-
-class FullResourceStrategy(RagStrategy):
-    name: Literal["full_resource"]
-    count: Optional[int] = Field(
-        default=None,
-        title="Count",
-        description="Maximum number of full documents to retrieve. If not specified, all matching documents are retrieved.",
-    )
-
-
-class HierarchyResourceStrategy(RagStrategy):
-    name: Literal["hierarchy"]
-    count: Optional[int] = Field(
-        default=None,
-        title="Count",
-        description="Number of extra characters that are added to each matching paragraph when adding to the context.",
-    )
-
-
-class NeighbouringParagraphsStrategy(RagStrategy):
-    name: Literal["neighbouring_paragraphs"]
-    before: int = Field(
-        default=2,
-        title="Before",
-        description="Number of previous neighbouring paragraphs to add to the context, for each matching paragraph in the retrieval step.",
-        ge=0,
-    )
-    after: int = Field(
-        default=2,
-        title="After",
-        description="Number of following neighbouring paragraphs to add to the context, for each matching paragraph in the retrieval step.",
-        ge=0,
-    )
-
-
-class TableImageStrategy(ImageRagStrategy):
-    name: Literal["tables"]
-
-
-class PageImageStrategy(ImageRagStrategy):
-    name: Literal["page_image"]
-    count: Optional[int] = Field(
-        default=None,
-        title="Count",
-        description="Maximum number of images to retrieve from the page. By default, at most 5 images are retrieved.",
-    )
-
-
-class ParagraphImageStrategy(ImageRagStrategy):
-    name: Literal["paragraph_image"]
-
-
-RagStrategies = Annotated[
-    Union[
-        FieldExtensionStrategy,
-        FullResourceStrategy,
-        HierarchyResourceStrategy,
-        NeighbouringParagraphsStrategy,
-    ],
-    Field(discriminator="name"),
-]
-RagImagesStrategies = Annotated[
-    Union[PageImageStrategy, ParagraphImageStrategy], Field(discriminator="name")
-]
 PromptContext = dict[str, str]
 PromptContextOrder = dict[str, int]
 PromptContextImages = dict[str, Image]
@@ -1095,6 +1018,7 @@ class ChatRequest(BaseModel):
 - `field_extension` will add the text of the matching resource's specified fields to the context.
 - `hierarchy` will add the title and summary text of the parent resource to the context for each matching paragraph.
 - `neighbouring_paragraphs` will add the sorrounding paragraphs to the context for each matching paragraph.
+- `prequeries`: list of queries to run before the main query. The results are added to the context with the specified weights for each query.
 If empty, the default strategy is used.
 `full_resource`, `hierarchy` and `neighbouring_paragraphs` are exclusive strategies: if selected, they must be the only strategy.
 """
@@ -1578,3 +1502,109 @@ def parse_custom_prompt(item: ChatRequest) -> CustomPrompt:
             prompt.user = item.prompt.user
             prompt.system = item.prompt.system
     return prompt
+
+
+class FieldExtensionStrategy(RagStrategy):
+    name: Literal["field_extension"]
+    fields: Set[str] = Field(
+        title="Fields",
+        description="List of field ids to extend the context with. It will try to extend the retrieval context with the specified fields in the matching resources. The field ids have to be in the format `{field_type}/{field_name}`, like 'a/title', 'a/summary' for title and summary fields or 't/amend' for a text field named 'amend'.",  # noqa
+        min_length=1,
+    )
+
+    @field_validator("fields", mode="after")
+    @classmethod
+    def fields_validator(cls, fields) -> Self:
+        # Check that the fields are in the format {field_type}/{field_name}
+        for field in fields:
+            try:
+                field_type, _ = field.strip("/").split("/")
+            except ValueError:
+                raise ValueError(f"Field '{field}' is not in the format {{field_type}}/{{field_name}}")
+            if field_type not in ALLOWED_FIELD_TYPES:
+                allowed_field_types_part = ", ".join(
+                    [f"'{fid}' for '{fname}' fields" for fid, fname in ALLOWED_FIELD_TYPES.items()]
+                )
+                raise ValueError(
+                    f"Field '{field}' does not have a valid field type. "
+                    f"Valid field types are: {allowed_field_types_part}."
+                )
+
+        return fields
+
+
+class FullResourceStrategy(RagStrategy):
+    name: Literal["full_resource"]
+    count: Optional[int] = Field(
+        default=None,
+        title="Count",
+        description="Maximum number of full documents to retrieve. If not specified, all matching documents are retrieved.",
+    )
+
+
+class HierarchyResourceStrategy(RagStrategy):
+    name: Literal["hierarchy"]
+    count: Optional[int] = Field(
+        default=None,
+        title="Count",
+        description="Number of extra characters that are added to each matching paragraph when adding to the context.",
+    )
+
+
+class NeighbouringParagraphsStrategy(RagStrategy):
+    name: Literal["neighbouring_paragraphs"]
+    before: int = Field(
+        default=2,
+        title="Before",
+        description="Number of previous neighbouring paragraphs to add to the context, for each matching paragraph in the retrieval step.",
+        ge=0,
+    )
+    after: int = Field(
+        default=2,
+        title="After",
+        description="Number of following neighbouring paragraphs to add to the context, for each matching paragraph in the retrieval step.",
+        ge=0,
+    )
+
+
+class PreQuery(BaseModel):
+    request: FindRequest = Field(
+        title="Request",
+        description="The request to be executed before the main query. The request should be a FindRequest object",
+    )
+    weight: float = Field(
+        default=1.0,
+        title="Weight",
+        description=(
+            "Weight of the prequery in the context. The weight is used to scale the results of the prequery before adding them to the context."
+            "The weight should be a positive number, and they are normalized so that the sum of all weights for all prequeries is 1."
+        ),
+        ge=0,
+    )
+
+
+class PreQueriesStrategy(RagStrategy):
+    name: Literal["prequeries"]
+    queries: list[PreQuery] = Field(
+        title="Queries",
+        description="List of queries to run before the main query. The results are added to the context with the specified weights for each query. There is a limit of 10 prequeries per request.",
+        min_length=1,
+        max_length=10,
+    )
+
+
+class TableImageStrategy(ImageRagStrategy):
+    name: Literal["tables"]
+
+
+class PageImageStrategy(ImageRagStrategy):
+    name: Literal["page_image"]
+    count: Optional[int] = Field(
+        default=None,
+        title="Count",
+        description="Maximum number of images to retrieve from the page. By default, at most 5 images are retrieved.",
+    )
+
+
+class ParagraphImageStrategy(ImageRagStrategy):
+    name: Literal["paragraph_image"]
