@@ -63,6 +63,7 @@ from nucliadb_models.search import (
     CitationsAskResponseItem,
     DebugAskResponseItem,
     ErrorAskResponseItem,
+    FindRequest,
     JSONAskResponseItem,
     KnowledgeboxFindResults,
     MetadataAskResponseItem,
@@ -70,6 +71,7 @@ from nucliadb_models.search import (
     NucliaDBClientType,
     PrequeriesAskResponseItem,
     PreQueriesStrategy,
+    PreQuery,
     PreQueryResult,
     PromptContext,
     PromptContextOrder,
@@ -77,6 +79,7 @@ from nucliadb_models.search import (
     Relations,
     RelationsAskResponseItem,
     RetrievalAskResponseItem,
+    SearchOptions,
     StatusAskResponseItem,
     SyncAskMetadata,
     SyncAskResponse,
@@ -414,17 +417,33 @@ async def ask(
             logger.info("Failed to rephrase ask query, using original")
 
     prequeries = parse_prequeries(ask_request)
-    # Retrieval is not needed if we are chatting on a specific
-    # resource and the full_resource strategy is enabled
-    needs_retrieval = True
-    if resource is not None:
-        if prequeries is not None:
-            raise InvalidQueryError(
-                "rag_strategies", "Prequeries are not supported when asking on a specific resource"
+
+    # Retrieval is not needed if we are asking on a specific resource and the full_resource strategy is enabled
+    needs_retrieval = resource is not None and any(
+        strategy.name == "full_resource" for strategy in ask_request.rag_strategies
+    )
+
+    # Generate the prequeries for an empty query with json schema
+    if (
+        resource is not None
+        and prequeries is None
+        and ask_request.query == ""
+        and ask_request.answer_json_schema is not None
+    ):
+        logger.info("Generating prequeries from JSON schema", extra={"kbid": kbid})
+        prequeries = compute_json_schema_prequeries(ask_request)
+        if prequeries is None:
+            logger.warning(
+                "No properties found in JSON schema",
+                extra={"kbid": kbid, "schema": ask_request.answer_json_schema},
             )
+
+    # Limit the retrieval queries to the resource if we are on a resource-scoped endpoint
+    if resource is not None:
         ask_request.resource_filters = [resource]
-        if any(strategy.name == "full_resource" for strategy in ask_request.rag_strategies):
-            needs_retrieval = False
+        if prequeries is not None:
+            for prequery in prequeries.queries:
+                prequery.request.resource_filters = [resource]
 
     # Maybe do a retrieval query
     if needs_retrieval:
@@ -580,3 +599,85 @@ def parse_prequeries(ask_request: AskRequest) -> Optional[PreQueriesStrategy]:
                     query.id = f"prequery_{index}"
             return prequeries
     return None
+
+
+def compute_json_schema_prequeries(ask_request: AskRequest) -> Optional[PreQueriesStrategy]:
+    """
+    This function generates a PreQueriesStrategy with a query for each property in the JSON schema
+    found in ask_request.answer_json_schema.
+
+    For instance, a JSON schema like this:
+    {
+        "name": "book_ordering",
+        "description": "Structured answer for a book to order",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "The title of the book"
+                },
+                "author": {
+                    "type": "string",
+                    "description": "The author of the book"
+                },
+                "ref_num": {
+                    "type": "string",
+                    "description": "The ISBN of the book"
+                },
+                "price": {
+                    "type": "number",
+                    "description": "The price of the book"
+                }
+            },
+            "required": ["title", "author", "ref_num", "price"]
+        }
+    }
+    Will generate a PreQueriesStrategy with 4 queries, one for each property in the JSON schema, with equal weights
+    [
+        PreQuery(request=FindRequest(query="The title of the book", ...), weight=1.0),
+        PreQuery(request=FindRequest(query="The author of the book", ...), weight=1.0),
+        PreQuery(request=FindRequest(query="The ISBN of the book", ...), weight=1.0),
+        PreQuery(request=FindRequest(query="The price of the book", ...), weight=1.0),
+    ]
+    """
+    prequeries: list[PreQuery] = []
+    json_schema = ask_request.answer_json_schema or {}
+    features = []
+    if ChatOptions.SEMANTIC in ask_request.features:
+        features.append(SearchOptions.SEMANTIC)
+    if ChatOptions.KEYWORD in ask_request.features:
+        features.append(SearchOptions.KEYWORD)
+    for prop_name, prop_def in json_schema.get("parameters", {}).get("properties", {}).items():
+        query = prop_name
+        if prop_def.get("description"):
+            query += f": {prop_def['description']}"
+        req = FindRequest(
+            query=query,
+            features=features,
+            filters=[],
+            keyword_filters=[],
+            page_number=0,
+            page_size=2,
+            min_score=None,  # to be automatically filled with the default min score
+            vectorset=ask_request.vectorset,
+            highlight=False,
+            debug=False,
+            show=[],
+            with_duplicates=False,
+            with_synonyms=False,
+            resource_filters=[],  # to be filled with the resource filter
+            rephrase=False,
+            security=ask_request.security,
+            autofilter=False,
+        )
+        prequery = PreQuery(
+            request=req,
+            weight=1.0,
+        )
+        prequeries.append(prequery)
+    if len(prequeries) == 0:
+        return None
+    strategy = PreQueriesStrategy(queries=prequeries)
+    ask_request.rag_strategies = [strategy]
+    return strategy

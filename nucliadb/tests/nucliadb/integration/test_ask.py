@@ -706,3 +706,35 @@ async def test_ask_rag_strategy_prequeries(nucliadb_reader: AsyncClient, knowled
     print(ask_response.prequeries.keys())
     assert len(ask_response.prequeries["prequery_0"].best_matches) > 1
     assert len(ask_response.prequeries["title_query"].best_matches) > 1
+
+
+@pytest.mark.asyncio()
+@pytest.mark.parametrize("knowledgebox", ("EXPERIMENTAL", "STABLE"), indirect=True)
+async def test_ask_with_json_schema_automatic_prequeries(
+    nucliadb_reader: AsyncClient,
+    knowledgebox,
+    resource,
+):
+    resp = await nucliadb_reader.post(
+        f"/kb/{knowledgebox}/resource/{resource}/ask",
+        headers={"X-Synchronous": "True"},
+        json={
+            "query": "",
+            "features": ["keyword", "semantic"],
+            "answer_json_schema": {
+                "name": "book_ordering",
+                "description": "Structured answer for a book to order",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "The title of the book"},
+                        "author": {"type": "string", "description": "The author of the book"},
+                        "ref_num": {"type": "string", "description": "The ISBN of the book"},
+                        "price": {"type": "number", "description": "The price of the book"},
+                    },
+                    "required": ["title", "author", "ref_num", "price"],
+                },
+            },
+        },
+    )
+    assert resp.status_code == 200, resp.text
