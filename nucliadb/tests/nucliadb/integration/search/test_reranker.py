@@ -40,3 +40,12 @@ async def test_reranker(
         },
     )
     assert resp.status_code == 200
+
+    resp = await nucliadb_reader.post(
+        f"/kb/{kbid}/ask",
+        json={
+            "query": "Which is our future?",
+            "reranker": reranker,
+        },
+    )
+    assert resp.status_code == 200

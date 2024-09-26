@@ -1335,6 +1335,8 @@ If empty, the default strategy is used, which simply adds the text of the matchi
         ),
     )
 
+    reranker: Reranker = SearchParamDefaults.reranker.to_pydantic_field()
+
     prefer_markdown: bool = Field(
         default=False,
         title="Prefer markdown",

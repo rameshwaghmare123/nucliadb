@@ -181,6 +181,7 @@ async def run_main_query(
     find_request.debug = item.debug
     find_request.rephrase = item.rephrase
     find_request.rephrase_prompt = parse_rephrase_prompt(item)
+    find_request.reranker = item.reranker
     # We don't support pagination, we always get the top_k results.
     find_request.page_size = item.top_k
     find_request.page_number = 0
