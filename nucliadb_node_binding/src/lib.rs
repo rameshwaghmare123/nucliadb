@@ -22,6 +22,7 @@ mod errors;
 mod reader;
 mod update;
 mod writer;
+mod similarity;
 
 use nucliadb_core::tracing::{error, Level};
 use nucliadb_node::utils::parse_log_levels;
@@ -42,6 +43,7 @@ pub fn nucliadb_node_binding(py: Python, m: &PyModule) -> PyResult<()> {
 
     m.add_class::<reader::NodeReader>()?;
     m.add_class::<writer::NodeWriter>()?;
+    m.add_class::<similarity::Similarity>()?;
 
     m.add("IndexNodeException", py.get_type::<errors::IndexNodeException>())?;
     m.add("LoadShardError", py.get_type::<errors::LoadShardError>())?;
