@@ -78,16 +78,20 @@ def main():
 
     vectors = [[random.random() for _ in range(vector_dimension)] for _ in range(n_vectors)]
 
-    n_calculations = 10000
+    n_calculations = 10_000
     for _ in range(n_calculations):
         vec1 = random.choice(vectors)
         vec2 = random.choice(vectors)
+
+        np_vec1 = np.array(vec1)
+        np_vec2 = np.array(vec2)
+
         python_cosine(vec1, vec2)
         python_dot_product(vec1, vec2)
         rust_cosine(vec1, vec2)
         rust_dot_product(vec1, vec2)
-        numpy_cosine(vec1, vec2)
-        numpy_dot_product(vec1, vec2)
+        numpy_cosine(np_vec1, np_vec2)
+        numpy_dot_product(np_vec1, np_vec2)
 
     print_times()
 
