@@ -78,6 +78,7 @@ from nucliadb_protos.train_pb2 import (
 from nucliadb_protos.train_pb2 import Position as TrainPosition
 from nucliadb_protos.utils_pb2 import Relation as PBRelation
 from nucliadb_protos.writer_pb2 import BrokerMessage
+from nucliadb_utils.debug import timeit
 from nucliadb_utils.storages.storage import Storage
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -152,6 +153,7 @@ class Resource:
         await self.txn.set(new_key, self.uuid.encode())
 
     # Basic
+    @timeit
     async def get_basic(self) -> Optional[PBBasic]:
         if self.basic is None:
             basic = await datamanagers.resources.get_basic(self.txn, kbid=self.kb.kbid, rid=self.uuid)
@@ -164,6 +166,7 @@ class Resource:
             current_basic.metadata.status = basic_in_payload.metadata.status
 
     @processor_observer.wrap({"type": "set_basic"})
+    @timeit
     async def set_basic(
         self,
         payload: PBBasic,
@@ -237,12 +240,14 @@ class Resource:
         self.modified = True
 
     # Origin
+    @timeit
     async def get_origin(self) -> Optional[PBOrigin]:
         if self.origin is None:
             origin = await datamanagers.resources.get_origin(self.txn, kbid=self.kb.kbid, rid=self.uuid)
             self.origin = origin
         return self.origin
 
+    @timeit
     async def set_origin(self, payload: PBOrigin):
         await datamanagers.resources.set_origin(
             self.txn, kbid=self.kb.kbid, rid=self.uuid, origin=payload
@@ -251,18 +256,21 @@ class Resource:
         self.origin = payload
 
     # Extra
+    @timeit
     async def get_extra(self) -> Optional[PBExtra]:
         if self.extra is None:
             extra = await datamanagers.resources.get_extra(self.txn, kbid=self.kb.kbid, rid=self.uuid)
             self.extra = extra
         return self.extra
 
+    @timeit
     async def set_extra(self, payload: PBExtra):
         await datamanagers.resources.set_extra(self.txn, kbid=self.kb.kbid, rid=self.uuid, extra=payload)
         self.modified = True
         self.extra = payload
 
     # Security
+    @timeit
     async def get_security(self) -> Optional[utils_pb2.Security]:
         if self.security is None:
             security = await datamanagers.resources.get_security(
@@ -271,6 +279,7 @@ class Resource:
             self.security = security
         return self.security
 
+    @timeit
     async def set_security(self, payload: utils_pb2.Security) -> None:
         await datamanagers.resources.set_security(
             self.txn, kbid=self.kb.kbid, rid=self.uuid, security=payload
@@ -279,6 +288,7 @@ class Resource:
         self.security = payload
 
     # Relations
+    @timeit
     async def get_relations(self) -> Optional[PBRelations]:
         if self.relations is None:
             relations = await datamanagers.resources.get_relations(
@@ -287,6 +297,7 @@ class Resource:
             self.relations = relations
         return self.relations
 
+    @timeit
     async def set_relations(self, payload: list[PBRelation]):
         relations = PBRelations()
         for relation in payload:
@@ -298,6 +309,7 @@ class Resource:
         self.relations = relations
 
     @processor_observer.wrap({"type": "generate_index_message"})
+    @timeit
     async def generate_index_message(self, reindex: bool = False) -> ResourceBrain:
         brain = ResourceBrain(rid=self.uuid)
         origin = await self.get_origin()
@@ -372,6 +384,7 @@ class Resource:
         return brain
 
     # Fields
+    @timeit
     async def get_fields(self, force: bool = False) -> dict[tuple[FieldType.ValueType, str], Field]:
         # Get all fields
         for type, field in await self.get_fields_ids(force=force):
@@ -401,6 +414,7 @@ class Resource:
                 yield result
             allfields.add(result)
 
+    @timeit
     async def _inner_get_fields_ids(self) -> list[tuple[FieldType.ValueType, str]]:
         # Use a set to make sure we don't have duplicate field ids
         result = set()
@@ -421,6 +435,7 @@ class Resource:
                     result.add((FieldType.GENERIC, generic))
         return list(result)
 
+    @timeit
     async def get_fields_ids(self, force: bool = False) -> list[tuple[FieldType.ValueType, str]]:
         """
         Get all ids of the fields of the resource and cache them.
@@ -430,6 +445,7 @@ class Resource:
             self.all_fields_keys = await self._inner_get_fields_ids()
         return self.all_fields_keys
 
+    @timeit
     async def get_field(self, key: str, type: FieldType.ValueType, load: bool = True):
         field = (type, key)
         if field not in self.fields:
@@ -439,6 +455,7 @@ class Resource:
             self.fields[field] = field_obj
         return self.fields[field]
 
+    @timeit
     async def set_field(self, type: FieldType.ValueType, key: str, payload: Any):
         field = (type, key)
         if field not in self.fields:
@@ -453,6 +470,7 @@ class Resource:
         self.modified = True
         return field_obj
 
+    @timeit
     async def delete_field(self, type: FieldType.ValueType, key: str):
         field = (type, key)
         if field in self.fields:
@@ -473,19 +491,23 @@ class Resource:
 
         await field_obj.delete()
 
+    @timeit
     def has_field(self, type: FieldType.ValueType, field: str) -> bool:
         return (type, field) in self.fields
 
+    @timeit
     async def get_all_field_ids(self, *, for_update: bool) -> Optional[PBAllFieldIDs]:
         return await datamanagers.resources.get_all_field_ids(
             self.txn, kbid=self.kb.kbid, rid=self.uuid, for_update=for_update
         )
 
+    @timeit
     async def set_all_field_ids(self, all_fields: PBAllFieldIDs):
         return await datamanagers.resources.set_all_field_ids(
             self.txn, kbid=self.kb.kbid, rid=self.uuid, allfields=all_fields
         )
 
+    @timeit
     async def update_all_field_ids(
         self,
         *,
@@ -519,6 +541,7 @@ class Resource:
             await self.set_all_field_ids(all_fields)
 
     @processor_observer.wrap({"type": "apply_fields"})
+    @timeit
     async def apply_fields(self, message: BrokerMessage):
         message_updated_fields = []
 
@@ -553,6 +576,7 @@ class Resource:
             )
 
     @processor_observer.wrap({"type": "apply_extracted"})
+    @timeit
     async def apply_extracted(self, message: BrokerMessage):
         errors = False
         field_obj: Field
@@ -601,9 +625,13 @@ class Resource:
 
         # Upload to binary storage
         # Vector indexing
+        import time
+
         if self.disable_vectors is False:
             for field_vectors in message.field_vectors:
+                start = time.time()
                 await self._apply_extracted_vectors(field_vectors)
+                print(f"Field vectors applied in {time.time() - start} seconds")
 
         # Only uploading to binary storage
         for field_large_metadata in message.field_large_metadata:
@@ -615,9 +643,12 @@ class Resource:
 
         # Basic proto may have been modified in some apply functions but we only
         # want to set it once
+        start = time.time()
         if self.basic != previous_basic:
             await self.set_basic(self.basic)
+        print(f"Basic applied in {time.time() - start} seconds")
 
+    @timeit
     async def _apply_extracted_text(self, extracted_text: ExtractedTextWrapper):
         field_obj = await self.get_field(
             extracted_text.field.field, extracted_text.field.field_type, load=False
@@ -627,11 +658,13 @@ class Resource:
             extracted_text.field,
         )
 
+    @timeit
     async def _apply_question_answers(self, question_answers: FieldQuestionAnswerWrapper):
         field = question_answers.field
         field_obj = await self.get_field(field.field, field.field_type, load=False)
         await field_obj.set_question_answers(question_answers)
 
+    @timeit
     async def _apply_link_extracted_data(self, link_extracted_data: LinkExtractedData):
         assert self.basic is not None
         field_link: Link = await self.get_field(
@@ -647,6 +680,7 @@ class Resource:
 
         maybe_update_basic_summary(self.basic, link_extracted_data.description)
 
+    @timeit
     async def maybe_update_title_metadata(self, link_extracted_data: LinkExtractedData):
         assert self.basic is not None
         if not link_extracted_data.title:
@@ -678,6 +712,7 @@ class Resource:
 
         await field.set_field_metadata(fcmw)
 
+    @timeit
     async def _apply_file_extracted_data(self, file_extracted_data: FileExtractedData):
         assert self.basic is not None
         field_file: File = await self.get_field(
@@ -690,6 +725,7 @@ class Resource:
         maybe_update_basic_icon(self.basic, file_extracted_data.icon)
         maybe_update_basic_thumbnail(self.basic, file_extracted_data.file_thumbnail)
 
+    @timeit
     async def _apply_field_computed_metadata(self, field_metadata: FieldComputedMetadataWrapper):
         assert self.basic is not None
         maybe_update_basic_summary(self.basic, field_metadata.metadata.metadata.summary)
@@ -732,6 +768,7 @@ class Resource:
 
         add_field_classifications(self.basic, field_metadata)
 
+    @timeit
     async def _apply_extracted_vectors(self, field_vectors: ExtractedVectorsWrapper):
         # Store vectors in the resource
 
@@ -782,6 +819,7 @@ class Resource:
         else:
             raise AttributeError("VO not found on set")
 
+    @timeit
     async def _apply_field_large_metadata(self, field_large_metadata: LargeComputedMetadataWrapper):
         field_obj = await self.get_field(
             field_large_metadata.field.field,
@@ -793,6 +831,7 @@ class Resource:
     def generate_field_id(self, field: FieldID) -> str:
         return f"{FIELD_TYPE_PB_TO_STR[field.field_type]}/{field.field}"
 
+    @timeit
     async def compute_security(self, brain: ResourceBrain):
         security = await self.get_security()
         if security is None:
@@ -800,6 +839,7 @@ class Resource:
         brain.set_security(security)
 
     @processor_observer.wrap({"type": "compute_global_tags"})
+    @timeit
     async def compute_global_tags(self, brain: ResourceBrain):
         origin = await self.get_origin()
         basic = await self.get_basic()
@@ -830,11 +870,13 @@ class Resource:
             )
 
     @processor_observer.wrap({"type": "compute_global_text"})
+    @timeit
     async def compute_global_text(self):
         for type, field in await self.get_fields_ids(force=True):
             fieldid = FieldID(field_type=type, field=field)
             await self.compute_global_text_field(fieldid, self.indexer)
 
+    @timeit
     async def compute_global_text_field(self, fieldid: FieldID, brain: ResourceBrain):
         fieldobj = await self.get_field(fieldid.field, fieldid.field_type, load=False)
         fieldkey = self.generate_field_id(fieldid)
@@ -1136,6 +1178,7 @@ class Resource:
         return pb_resource
 
 
+@timeit
 async def get_file_page_positions(field: File) -> FilePagePositions:
     positions: FilePagePositions = {}
     file_extracted_data = await field.get_file_extracted_data()

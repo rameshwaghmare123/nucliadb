@@ -50,6 +50,7 @@ from nucliadb_protos.noderesources_pb2 import Resource as PBBrainResource
 from nucliadb_telemetry import errors
 from nucliadb_utils import const
 from nucliadb_utils.cache.pubsub import PubSubDriver
+from nucliadb_utils.debug import timeit
 from nucliadb_utils.storages.storage import Storage
 from nucliadb_utils.utilities import get_storage, has_feature
 
@@ -370,6 +371,7 @@ class Processor:
         return None
 
     @processor_observer.wrap({"type": "index_resource"})
+    @timeit
     async def index_resource(
         self,
         resource: Resource,
@@ -494,6 +496,7 @@ class Processor:
             await self.storage.deadletter(message, seq, seqid, partition)
 
     @processor_observer.wrap({"type": "apply_resource"})
+    @timeit
     async def apply_resource(
         self,
         message: writer_pb2.BrokerMessage,

@@ -18,6 +18,7 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 import logging
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Optional
@@ -44,6 +45,7 @@ from nucliadb_protos.resources_pb2 import (
     UserMetadata,
 )
 from nucliadb_protos.utils_pb2 import Relation, RelationNode
+from nucliadb_utils.debug import timeit
 
 FilePagePositions = dict[int, tuple[int, int]]
 
@@ -72,6 +74,7 @@ class ResourceBrain:
     def apply_field_text(self, field_key: str, text: str):
         self.brain.texts[field_key].text = text
 
+    @timeit
     def _get_paragraph_user_classifications(
         self, basic_user_field_metadata: Optional[UserFieldMetadata]
     ) -> ParagraphClassifications:
@@ -88,6 +91,7 @@ class ResourceBrain:
                     pc.valid.setdefault(paragraph_key, []).append(classif_label)
         return pc
 
+    @timeit
     def apply_field_metadata(
         self,
         field_key: str,
@@ -96,6 +100,8 @@ class ResourceBrain:
         extracted_text: Optional[ExtractedText],
         basic_user_field_metadata: Optional[UserFieldMetadata] = None,
     ):
+        start = time.time()
+
         # To check for duplicate paragraphs
         unique_paragraphs: set[str] = set()
 
@@ -152,14 +158,15 @@ class ResourceBrain:
                         representation=representation,
                     ),
                 )
-                p.labels.append(f"/k/{Paragraph.TypeParagraph.Name(paragraph.kind).lower()}")
+                p_labels = set()
+                p_labels.add(f"/k/{Paragraph.TypeParagraph.Name(paragraph.kind).lower()}")
                 for classification in paragraph.classifications:
                     label = f"/l/{classification.labelset}/{classification.label}"
                     if label not in denied_classifications:
-                        p.labels.append(label)
+                        p_labels.add(label)
 
                 # Add user annotated labels to paragraphs
-                extend_unique(p.labels, paragraph_classifications.valid.get(key, []))  # type: ignore
+                p_labels.add(paragraph_classifications.valid.get(key, []))  # type: ignore
 
                 self.brain.paragraphs[field_key].paragraphs[key].CopyFrom(p)
 
@@ -220,12 +227,16 @@ class ResourceBrain:
             for relation in relations.relations:
                 self.brain.relations.append(relation)
 
+        end = time.time()
+        print(f"Time to apply_field_metadata: {end - start}")
+
     def delete_field(self, field_key: str):
         ftype, fkey = field_key.split("/")
         full_field_id = ids.FieldId(rid=self.rid, type=ftype, key=fkey).full()
         self.brain.paragraphs_to_delete.append(full_field_id)
         self.brain.sentences_to_delete.append(full_field_id)
 
+    @timeit
     def apply_field_vectors(
         self,
         field_id: str,
@@ -296,6 +307,7 @@ class ResourceBrain:
             self.brain.sentences_to_delete.append(full_field_id)
             self.brain.paragraphs_to_delete.append(full_field_id)
 
+    @timeit
     def _apply_field_vector(
         self,
         field_id: str,
@@ -372,6 +384,7 @@ class ResourceBrain:
         self._set_resource_labels(basic, origin)
         self._set_resource_relations(basic, origin)
 
+    @timeit
     def _set_resource_dates(self, basic: Basic, origin: Optional[Origin]):
         if basic.created.seconds > 0:
             self.brain.metadata.created.CopyFrom(basic.created)
@@ -393,6 +406,7 @@ class ResourceBrain:
             if origin.HasField("modified") and origin.modified.seconds > 0:
                 self.brain.metadata.modified.CopyFrom(origin.modified)
 
+    @timeit
     def _set_resource_relations(self, basic: Basic, origin: Optional[Origin]):
         relationnodedocument = RelationNode(value=self.rid, ntype=RelationNode.NodeType.RESOURCE)
         if origin is not None:
@@ -424,6 +438,7 @@ class ResourceBrain:
         # relations
         self.brain.relations.extend(basic.usermetadata.relations)
 
+    @timeit
     def _set_resource_labels(self, basic: Basic, origin: Optional[Origin]):
         if origin is not None:
             if origin.source_id:
@@ -471,6 +486,7 @@ class ResourceBrain:
 
         self.compute_labels()
 
+    @timeit
     def process_field_metadata(
         self,
         field_key: str,
@@ -513,6 +529,7 @@ class ResourceBrain:
             )
             self.brain.relations.append(rel)
 
+    @timeit
     def apply_field_labels(
         self,
         field_key: str,
@@ -640,6 +657,4 @@ def extend_unique(a: list, b: list):
     """
     Prevents extending with duplicate elements
     """
-    for item in b:
-        if item not in a:
-            a.append(item)
+    return list(set(a).union(set(b)))

@@ -18,7 +18,9 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 import contextlib
+import inspect
 import linecache
+import time
 import tracemalloc
 
 
@@ -65,3 +67,25 @@ def display_top(snapshot, key_type="lineno", limit=10):  # pragma: no cover
         print("%s other: %.1f KiB" % (len(other), size / 1024))
     total = sum(stat.size for stat in top_stats)
     print("Total allocated size: %.1f KiB" % (total / 1024))
+
+
+def timeit(func):
+    async def async_wrapper(*args, **kwargs):
+        print(f"---> Executing {func.__name__}")
+        start = time.time()
+        result = await func(*args, **kwargs)
+        end = time.time()
+        print(f"<--- Time to execute {func.__name__}: {end - start}")
+        return result
+
+    def wrapper(*args, **kwargs):
+        print(f"---> Executing {func.__name__}")
+        start = time.time()
+        result = func(*args, **kwargs)
+        end = time.time()
+        print(f"<--- Time to execute {func.__name__}: {end - start}")
+        return result
+
+    if inspect.iscoroutinefunction(func):
+        return async_wrapper
+    return wrapper

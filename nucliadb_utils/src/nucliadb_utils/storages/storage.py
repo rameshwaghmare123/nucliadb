@@ -312,6 +312,7 @@ class Storage(abc.ABC, metaclass=abc.ABCMeta):
             new_cf = CloudFile()
             new_cf.CopyFrom(file)
         else:
+            return CloudFile()
             raise InvalidCloudFile()
         return new_cf
 
