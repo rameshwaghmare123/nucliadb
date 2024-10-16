@@ -876,9 +876,11 @@ class PromptContextBuilder:
             elif strategy.name == RagStrategyName.METADATA_EXTENSION:
                 metadata_extension = cast(MetadataExtensionStrategy, strategy)
             else:  # pragma: no cover
-                logger.warning(
-                    "Unknown rag strategy", extra={"strategy": strategy.name, "kbid": self.kbid}
-                )
+                if strategy.name != RagStrategyName.PREQUERIES:
+                    # Prequeries strategy is not handled here
+                    logger.warning(
+                        "Unknown rag strategy", extra={"strategy": strategy.name, "kbid": self.kbid}
+                    )
 
         if full_resource:
             # When full resoure is enabled, only metadata extension is allowed.
