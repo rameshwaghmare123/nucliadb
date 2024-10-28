@@ -22,7 +22,7 @@ unstructured data.
 It is an out of the box hybrid search database, utilizing vector,
 full text and graph indexes.
 
-NucliaDB is written in Rust and Python. We designed it to index large datasets and provide multi-teanant support.
+NucliaDB is written in Rust and Python. We designed it to index large datasets and provide multi-tenant support.
 
 When utilizing NucliaDB with Nuclia cloud, you are able to the power
 of an NLP database without the hassle of data extraction, enrichment
